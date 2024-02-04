@@ -8,3 +8,5 @@ coverage/
 backend.env
 
 /src/generated/prisma
+
+uploads/

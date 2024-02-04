@@ -89,6 +89,7 @@ model Organization {
   clinicSickLeaves           ClinicSickLeave[]
   clinicReports              ClinicReport[]
   clinicFinanceEntries       ClinicFinanceEntry[]
+  careHandoffs               CareHandoff[]
 
   @@index([planId])
   @@index([status])
@@ -139,6 +140,9 @@ model User {
   fullName            String
   role                String
   status              String        @default("invited")
+  passwordHash        String?
+  emailVerifiedAt     DateTime?
+  mustChangePassword  Boolean       @default(false)
   avatarUrl           String?
   phone               String?
   emailSignature      String?
@@ -150,6 +154,8 @@ model User {
   branch              Branch?       @relation("UserBranch", fields: [branchId], references: [id], onDelete: SetNull)
   defaultBranch       Branch?       @relation("UserDefaultBranch", fields: [defaultBranchId], references: [id], onDelete: SetNull)
   invitationsAccepted Invitation[]  @relation("InvitationAcceptedBy")
+  invitationsSent     Invitation[]  @relation("InvitationInvitedBy")
+  authTokens          AuthToken[]
 
   @@index([organizationId])
   @@index([branchId])
@@ -157,6 +163,24 @@ model User {
   @@index([role])
   @@index([status])
   @@map("users")
+}
+
+/// Single-use email tokens the backend owns outright: address verification and
+/// password recovery. Only the SHA-256 hash of the token is stored, so a leaked
+/// database row cannot be replayed as a working link.
+model AuthToken {
+  id         String    @id @default(cuid())
+  userId     String
+  type       String
+  tokenHash  String    @unique
+  expiresAt  DateTime
+  consumedAt DateTime?
+  createdAt  DateTime  @default(now())
+  user       User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, type])
+  @@index([expiresAt])
+  @@map("auth_tokens")
 }
 
 model ClinicRole {
@@ -175,7 +199,7 @@ model ClinicRole {
 }
 
 model ClinicPatient {
-  id                String               @id
+  id                String                 @id
   organizationId    String
   name              String
   age               Int
@@ -184,14 +208,14 @@ model ClinicPatient {
   email             String
   lastVisit         String
   status            String
-  balance           Int                  @default(0)
+  balance           Int                    @default(0)
   medicalHistory    Json
   dentalChart       Json
   notes             Json
   emergencyContacts Json
-  createdAt         DateTime             @default(now())
-  updatedAt         DateTime             @updatedAt
-  organization      Organization         @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  createdAt         DateTime               @default(now())
+  updatedAt         DateTime               @updatedAt
+  organization      Organization           @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   patientProfile    ClinicPatientProfile?
   payments          ClinicPatientPayment[]
   appointments      ClinicAppointment[]
@@ -208,24 +232,24 @@ model ClinicPatient {
 }
 
 model ClinicPatientProfile {
-  patientId         String        @id
-  organizationId    String
-  directoryId       String
-  dob               String
-  address           String
-  branchId          String
-  branchName        String
-  bloodGroup        String
-  nextAppointment   String?
-  paymentPlan       Json
-  pendingAmount     Int           @default(0)
-  recordCount       Int           @default(0)
-  cardNumber        String
-  registrationTime  String
-  createdAt         DateTime      @default(now())
-  updatedAt         DateTime      @updatedAt
-  organization      Organization  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  patient           ClinicPatient @relation(fields: [patientId], references: [id], onDelete: Cascade)
+  patientId        String        @id
+  organizationId   String
+  directoryId      String
+  dob              String
+  address          String
+  branchId         String
+  branchName       String
+  bloodGroup       String
+  nextAppointment  String?
+  paymentPlan      Json
+  pendingAmount    Int           @default(0)
+  recordCount      Int           @default(0)
+  cardNumber       String
+  registrationTime String
+  createdAt        DateTime      @default(now())
+  updatedAt        DateTime      @updatedAt
+  organization     Organization  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  patient          ClinicPatient @relation(fields: [patientId], references: [id], onDelete: Cascade)
 
   @@index([organizationId])
   @@index([branchId])
@@ -252,24 +276,24 @@ model ClinicPatientPayment {
 }
 
 model ClinicDoctor {
-  id                String              @id
-  organizationId    String
-  name              String
-  specialty         String
-  schedule          String
-  availability      String
-  assignedPatients  Int                 @default(0)
-  revenue           Int                 @default(0)
-  procedures        Int                 @default(0)
-  rating            Int                 @default(0)
+  id                 String               @id
+  organizationId     String
+  name               String
+  specialty          String
+  schedule           String
+  availability       String
+  assignedPatients   Int                  @default(0)
+  revenue            Int                  @default(0)
+  procedures         Int                  @default(0)
+  rating             Int                  @default(0)
   weeklyAvailability Json
-  createdAt         DateTime            @default(now())
-  updatedAt         DateTime            @updatedAt
-  organization      Organization        @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  appointments      ClinicAppointment[]
-  diagnoses         ClinicDiagnosis[]
-  prescriptions     ClinicPrescription[]
-  sickLeaves        ClinicSickLeave[]
+  createdAt          DateTime             @default(now())
+  updatedAt          DateTime             @updatedAt
+  organization       Organization         @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  appointments       ClinicAppointment[]
+  diagnoses          ClinicDiagnosis[]
+  prescriptions      ClinicPrescription[]
+  sickLeaves         ClinicSickLeave[]
 
   @@index([organizationId])
   @@index([availability])
@@ -338,7 +362,7 @@ model ClinicProcedure {
 }
 
 model ClinicDiagnosis {
-  id             String        @id
+  id             String         @id
   organizationId String
   patientId      String?
   doctorId       String?
@@ -353,9 +377,9 @@ model ClinicDiagnosis {
   medicine       String?
   followUp       String?
   attachments    Json
-  createdAt      DateTime      @default(now())
-  updatedAt      DateTime      @updatedAt
-  organization   Organization  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+  organization   Organization   @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   patientRecord  ClinicPatient? @relation(fields: [patientId], references: [id], onDelete: SetNull)
   doctorRecord   ClinicDoctor?  @relation(fields: [doctorId], references: [id], onDelete: SetNull)
 
@@ -366,7 +390,7 @@ model ClinicDiagnosis {
 }
 
 model ClinicSymptom {
-  id             String        @id
+  id             String         @id
   organizationId String
   patientId      String?
   patient        String
@@ -378,9 +402,10 @@ model ClinicSymptom {
   swelling       String
   infection      String
   notes          String
-  createdAt      DateTime      @default(now())
-  updatedAt      DateTime      @updatedAt
-  organization   Organization  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  examination    Json?
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+  organization   Organization   @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   patientRecord  ClinicPatient? @relation(fields: [patientId], references: [id], onDelete: SetNull)
 
   @@index([organizationId])
@@ -389,7 +414,7 @@ model ClinicSymptom {
 }
 
 model ClinicPrescription {
-  id             String        @id
+  id             String         @id
   organizationId String
   patientId      String?
   doctorId       String?
@@ -401,9 +426,9 @@ model ClinicPrescription {
   status         String
   date           String
   instructions   String?
-  createdAt      DateTime      @default(now())
-  updatedAt      DateTime      @updatedAt
-  organization   Organization  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+  organization   Organization   @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   patientRecord  ClinicPatient? @relation(fields: [patientId], references: [id], onDelete: SetNull)
   doctorRecord   ClinicDoctor?  @relation(fields: [doctorId], references: [id], onDelete: SetNull)
 
@@ -414,7 +439,7 @@ model ClinicPrescription {
 }
 
 model ClinicInvoice {
-  id             String        @id
+  id             String         @id
   organizationId String
   patientId      String?
   billToName     String
@@ -422,9 +447,9 @@ model ClinicInvoice {
   amount         Int
   status         String
   items          Json
-  createdAt      DateTime      @default(now())
-  updatedAt      DateTime      @updatedAt
-  organization   Organization  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+  organization   Organization   @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   patientRecord  ClinicPatient? @relation(fields: [patientId], references: [id], onDelete: SetNull)
 
   @@index([organizationId])
@@ -433,7 +458,7 @@ model ClinicInvoice {
 }
 
 model ClinicForm {
-  id             String        @id
+  id             String         @id
   organizationId String
   patientId      String?
   patient        String
@@ -441,9 +466,9 @@ model ClinicForm {
   status         String
   owner          String
   updated        String
-  createdAt      DateTime      @default(now())
-  updatedAt      DateTime      @updatedAt
-  organization   Organization  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+  organization   Organization   @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   patientRecord  ClinicPatient? @relation(fields: [patientId], references: [id], onDelete: SetNull)
 
   @@index([organizationId])
@@ -452,7 +477,7 @@ model ClinicForm {
 }
 
 model ClinicSickLeave {
-  id             String        @id
+  id             String         @id
   organizationId String
   patientId      String?
   doctorId       String?
@@ -462,9 +487,9 @@ model ClinicSickLeave {
   start          String
   end            String
   status         String
-  createdAt      DateTime      @default(now())
-  updatedAt      DateTime      @updatedAt
-  organization   Organization  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+  organization   Organization   @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   patientRecord  ClinicPatient? @relation(fields: [patientId], references: [id], onDelete: SetNull)
   doctorRecord   ClinicDoctor?  @relation(fields: [doctorId], references: [id], onDelete: SetNull)
 
@@ -514,20 +539,26 @@ model Invitation {
   organizationId   String
   branchId         String?
   acceptedByUserId String?
+  invitedByUserId  String?
   email            String
+  fullName         String?
   role             String
+  tokenHash        String?      @unique
   sentAt           DateTime
   expiresAt        DateTime
+  acceptedAt       DateTime?
   status           String
   createdAt        DateTime     @default(now())
   updatedAt        DateTime     @updatedAt
   organization     Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   branch           Branch?      @relation(fields: [branchId], references: [id], onDelete: SetNull)
   acceptedByUser   User?        @relation("InvitationAcceptedBy", fields: [acceptedByUserId], references: [id], onDelete: SetNull)
+  invitedByUser    User?        @relation("InvitationInvitedBy", fields: [invitedByUserId], references: [id], onDelete: SetNull)
 
   @@index([organizationId])
   @@index([branchId])
   @@index([status])
+  @@index([email])
   @@map("invitations")
 }
 
@@ -578,31 +609,64 @@ model SuperAdminProfile {
 }
 
 model ClinicWorkspaceState {
-  id                 String        @id
-  organizationId     String?       @unique
-  patients           Json
-  patientProfiles    Json
-  patientPayments    Json
-  appointments       Json
-  revenueData        Json
-  doctors            Json
-  procedures         Json
-  diagnoses          Json
-  symptoms           Json
-  prescriptions      Json
-  invoices           Json
-  forms              Json
-  sickLeaves         Json
-  reports            Json
-  staffUsers         Json
-  roles              Json
-  rolePermissions    Json
-  branches           Json
+  id                  String        @id
+  organizationId      String?       @unique
+  patients            Json
+  patientProfiles     Json
+  patientPayments     Json
+  appointments        Json
+  revenueData         Json
+  doctors             Json
+  procedures          Json
+  diagnoses           Json
+  symptoms            Json
+  prescriptions       Json
+  invoices            Json
+  forms               Json
+  sickLeaves          Json
+  reports             Json
+  staffUsers          Json
+  roles               Json
+  rolePermissions     Json
+  branches            Json
   organizationProfile Json
-  financeEntries     Json
-  createdAt          DateTime      @default(now())
-  updatedAt          DateTime      @updatedAt
-  organization       Organization? @relation(fields: [organizationId], references: [id], onDelete: SetNull)
+  financeEntries      Json
+  createdAt           DateTime      @default(now())
+  updatedAt           DateTime      @updatedAt
+  organization        Organization? @relation(fields: [organizationId], references: [id], onDelete: SetNull)
 
   @@map("clinic_workspace_states")
+}
+
+/// A doctor telling reception "I am free now", and reception answering with the
+/// patient to send in. Kept in its own table rather than inside the workspace
+/// JSON blob because it is the one record in the app that has to arrive in
+/// under a second: a small row means a small write, a small read, and no
+/// read-modify-write race when two receptionists answer the same signal.
+model CareHandoff {
+  id                  String       @id
+  organizationId      String
+  branchId            String
+  doctorId            String
+  doctorName          String
+  doctorSpecialty     String
+  requestedByMemberId String
+  requestedAt         DateTime
+  status              String
+  patientId           String?
+  patientName         String?
+  appointmentId       String?
+  assignedByMemberId  String?
+  assignedByName      String?
+  assignedAt          DateTime?
+  acknowledgedAt      DateTime?
+  createdAt           DateTime     @default(now())
+  updatedAt           DateTime     @updatedAt
+  organization        Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  // Reception lists open signals for its branch; the doctor watches its own.
+  @@index([organizationId, status, updatedAt])
+  @@index([organizationId, updatedAt])
+  @@index([organizationId, doctorId, status])
+  @@map("care_handoffs")
 }
