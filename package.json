@@ -14,11 +14,15 @@
     "migrate:money-scopes": "tsx scripts/migrate-money-scopes.ts",
     "migrate:roles": "tsx scripts/migrate-roles.ts",
     "reconcile:roles": "tsx scripts/reconcile-snapshot-roles.ts",
-    "lint": "tsc --noEmit"
+    "lint": "tsc --noEmit",
+    "storage:records": "tsx scripts/setup-records-bucket.ts",
+    "migrate:attachments": "tsx scripts/migrate-record-attachments.ts",
+    "verify:attachments": "tsx scripts/verify-attachments.mts"
   },
   "dependencies": {
     "@prisma/adapter-pg": "^7.8.0",
     "@prisma/client": "^7.8.0",
+    "@supabase/supabase-js": "^2.111.0",
     "bcryptjs": "^3.0.3",
     "cors": "^2.8.5",
     "dotenv": "^17.2.3",
@@ -26,8 +30,11 @@
     "express-rate-limit": "^8.6.1",
     "jsonwebtoken": "^9.0.3",
     "nodemailer": "^9.0.3",
+    "otplib": "^13.4.1",
     "pdf-parse": "^2.4.5",
     "pg": "^8.21.0",
+    "qrcode": "^1.5.4",
+    "sharp": "^0.35.3",
     "swagger-ui-express": "^5.0.1",
     "tesseract.js": "^7.0.0"
   },
@@ -38,6 +45,7 @@
     "@types/jsonwebtoken": "^9.0.10",
     "@types/node": "^22.14.0",
     "@types/nodemailer": "^8.0.1",
+    "@types/qrcode": "^1.5.5",
     "@types/swagger-ui-express": "^4.1.8",
     "prisma": "^7.8.0",
     "tsx": "^4.21.0",

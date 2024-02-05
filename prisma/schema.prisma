@@ -60,6 +60,14 @@ model Organization {
   aiChecksToday              Int                           @default(0)
   aiResetDate                DateTime
   aiLastUsedAt               DateTime?
+  /// Weekly AI spend cap, in millionths of a USD ($1.00 = 1_000_000). Integer
+  /// micro-dollars rather than a float so repeated small additions cannot drift.
+  aiWeeklyBudgetMicroUsd     Int                           @default(1000000)
+  aiWeekSpentMicroUsd        Int                           @default(0)
+  /// When the current weekly window ends. Null until the clinic's first AI call.
+  aiWeekResetAt              DateTime?
+  aiWeekInputTokens          Int                           @default(0)
+  aiWeekOutputTokens         Int                           @default(0)
   dashboardAppointmentsToday Int                           @default(0)
   dashboardMonthlyRevenue    Int                           @default(0)
   dashboardLowStockItems     Int                           @default(0)
@@ -90,6 +98,7 @@ model Organization {
   clinicReports              ClinicReport[]
   clinicFinanceEntries       ClinicFinanceEntry[]
   careHandoffs               CareHandoff[]
+  patientAttachments         PatientAttachment[]
 
   @@index([planId])
   @@index([status])
@@ -131,31 +140,35 @@ model Branch {
 }
 
 model User {
-  id                  String        @id @default(cuid())
-  authUserId          String?       @unique
+  id                  String                    @id @default(cuid())
+  authUserId          String?                   @unique
   organizationId      String?
   branchId            String?
   defaultBranchId     String?
-  email               String        @unique
+  email               String                    @unique
   fullName            String
   role                String
-  status              String        @default("invited")
+  status              String                    @default("invited")
   passwordHash        String?
   emailVerifiedAt     DateTime?
-  mustChangePassword  Boolean       @default(false)
+  mustChangePassword  Boolean                   @default(false)
+  authVersion         Int                       @default(0)
   avatarUrl           String?
   phone               String?
   emailSignature      String?
   preferences         Json?
   lastActiveAt        DateTime?
-  createdAt           DateTime      @default(now())
-  updatedAt           DateTime      @updatedAt
-  organization        Organization? @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  branch              Branch?       @relation("UserBranch", fields: [branchId], references: [id], onDelete: SetNull)
-  defaultBranch       Branch?       @relation("UserDefaultBranch", fields: [defaultBranchId], references: [id], onDelete: SetNull)
-  invitationsAccepted Invitation[]  @relation("InvitationAcceptedBy")
-  invitationsSent     Invitation[]  @relation("InvitationInvitedBy")
+  createdAt           DateTime                  @default(now())
+  updatedAt           DateTime                  @updatedAt
+  organization        Organization?             @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  branch              Branch?                   @relation("UserBranch", fields: [branchId], references: [id], onDelete: SetNull)
+  defaultBranch       Branch?                   @relation("UserDefaultBranch", fields: [defaultBranchId], references: [id], onDelete: SetNull)
+  invitationsAccepted Invitation[]              @relation("InvitationAcceptedBy")
+  invitationsSent     Invitation[]              @relation("InvitationInvitedBy")
   authTokens          AuthToken[]
+  authSessions        AuthSession[]
+  twoFactorCredential UserTwoFactorCredential?
+  twoFactorChallenges TwoFactorLoginChallenge[]
 
   @@index([organizationId])
   @@index([branchId])
@@ -163,6 +176,31 @@ model User {
   @@index([role])
   @@index([status])
   @@map("users")
+}
+
+/// Server-owned login sessions. The bearer token itself is never stored; only
+/// its SHA-256 digest is retained so one device can be revoked without rotating
+/// every session belonging to the account.
+model AuthSession {
+  id          String    @id
+  userId      String
+  authVersion Int
+  tokenHash   String    @unique
+  userAgent   String?
+  browser     String
+  os          String
+  deviceType  String
+  deviceLabel String
+  ipAddress   String?
+  createdAt   DateTime  @default(now())
+  lastSeenAt  DateTime  @default(now())
+  expiresAt   DateTime
+  revokedAt   DateTime?
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, authVersion, revokedAt, expiresAt])
+  @@index([expiresAt])
+  @@map("auth_sessions")
 }
 
 /// Single-use email tokens the backend owns outright: address verification and
@@ -181,6 +219,60 @@ model AuthToken {
   @@index([userId, type])
   @@index([expiresAt])
   @@map("auth_tokens")
+}
+
+/// A user's authenticator-app credential. The shared TOTP secret is encrypted
+/// with AES-256-GCM by the API; plaintext secrets and provisioning URIs never
+/// reach the database.
+model UserTwoFactorCredential {
+  userId           String                  @id
+  encryptedSecret  String
+  keyVersion       Int                     @default(1)
+  enabledAt        DateTime?
+  setupExpiresAt   DateTime?
+  lastUsedTimeStep Int?
+  createdAt        DateTime                @default(now())
+  updatedAt        DateTime                @updatedAt
+  user             User                    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  recoveryCodes    TwoFactorRecoveryCode[]
+
+  @@map("user_two_factor_credentials")
+}
+
+/// High-entropy, single-use recovery codes. The visible code is returned once;
+/// only a keyed SHA-256 digest remains after enrollment.
+model TwoFactorRecoveryCode {
+  id         String                  @id @default(cuid())
+  userId     String
+  codeIndex  Int
+  codeHash   String
+  usedAt     DateTime?
+  createdAt  DateTime                @default(now())
+  credential UserTwoFactorCredential @relation(fields: [userId], references: [userId], onDelete: Cascade)
+
+  @@unique([userId, codeIndex])
+  @@unique([userId, codeHash])
+  @@index([userId, usedAt])
+  @@map("two_factor_recovery_codes")
+}
+
+/// Opaque, short-lived pre-authentication state created only after the password
+/// is correct. No bearer session is issued until this challenge is consumed.
+model TwoFactorLoginChallenge {
+  id           String    @id @default(cuid())
+  userId       String
+  tokenHash    String    @unique
+  expiresAt    DateTime
+  attempts     Int       @default(0)
+  lastFailedAt DateTime?
+  consumedAt   DateTime?
+  createdAt    DateTime  @default(now())
+  user         User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, consumedAt])
+  @@index([userId, lastFailedAt])
+  @@index([expiresAt])
+  @@map("two_factor_login_challenges")
 }
 
 model ClinicRole {
@@ -515,22 +607,31 @@ model ClinicReport {
 }
 
 model ClinicFinanceEntry {
-  id             String       @id
-  organizationId String
-  type           String
-  date           String
-  category       String
-  description    String
-  party          String
-  owner          String
-  amount         Decimal      @db.Decimal(12, 2)
-  status         String
-  frequency      String
-  createdAt      DateTime     @default(now())
-  updatedAt      DateTime     @updatedAt
-  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  id               String       @id
+  organizationId   String
+  type             String
+  date             String
+  category         String
+  description      String
+  party            String
+  owner            String
+  amount           Decimal      @db.Decimal(12, 2)
+  status           String
+  frequency        String
+  // Monthly recurrence. `seriesId` ties every occurrence of one repeating item
+  // together, `recurrence` is 'active' | 'stopped', `generatedThrough` is the
+  // 'YYYY-MM' watermark of the last month already booked for the series, and
+  // `autoAdded` marks rows the roll-forward created rather than a person.
+  seriesId         String?
+  recurrence       String?
+  generatedThrough String?
+  autoAdded        Boolean      @default(false)
+  createdAt        DateTime     @default(now())
+  updatedAt        DateTime     @updatedAt
+  organization     Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
 
   @@index([organizationId])
+  @@index([seriesId])
   @@map("clinic_finance_entries")
 }
 
@@ -669,4 +770,48 @@ model CareHandoff {
   @@index([organizationId, updatedAt])
   @@index([organizationId, doctorId, status])
   @@map("care_handoffs")
+}
+
+/// A patient image held in object storage rather than in the workspace snapshot.
+///
+/// Record images used to be base64 `dataUrl` strings inside the clinic workspace
+/// JSON, so every photo inflated a single Postgres row and was fetched in full on
+/// every page load. The bytes now live in a private bucket; this row is the index,
+/// the permission boundary, and the audit trail.
+///
+/// `storagePath` is never handed to a browser. Reads go through the API, which
+/// checks the caller's organization and issues a short-lived signed URL.
+model PatientAttachment {
+  id             String   @id @default(cuid())
+  organizationId String
+  /// Workspace patient id (e.g. "p1"), not a foreign key: the workspace snapshot
+  /// owns patient identity and can be rewritten wholesale by a clinic admin.
+  patientId      String
+  /// Which record entry inside the patient's history this belongs to, when known.
+  recordId       String?
+  /// Original file name, kept for display and download only. Never used to build
+  /// the storage path, so a hostile name cannot escape its folder.
+  fileName       String
+  /// Mime type of the *stored* object, after re-encoding.
+  contentType    String
+  /// Path inside the bucket. Opaque to clients.
+  storagePath    String   @unique
+  bytes          Int
+  width          Int?
+  height         Int?
+  /// True when the image was treated as diagnostic and kept near-lossless.
+  isRadiograph   Boolean  @default(false)
+  /// SHA-256 of the stored bytes, so a corrupted or swapped object is detectable.
+  checksum       String
+  /// Account that uploaded it. Kept as a plain id so deleting a staff member does
+  /// not erase who added a clinical image.
+  uploadedById   String?
+  uploadedByName String?
+  createdAt      DateTime @default(now())
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId, patientId, createdAt])
+  @@index([organizationId, createdAt])
+  @@map("patient_attachments")
 }
