@@ -153,24 +153,8 @@ export async function syncSessionUser(input: SyncSessionUserInput) {
   };
 }
 
-export async function resolveClinicOrganizationIdByAuthUserId(authUserId: string) {
-  const normalizedAuthUserId = authUserId.trim();
-
-  if (!normalizedAuthUserId) {
-    return null;
-  }
-
-  const user = await prisma.user.findFirst({
-    where: { authUserId: normalizedAuthUserId },
-    select: {
-      organizationId: true,
-      status: true,
-    },
-  });
-
-  if (!user || user.status === 'banned') {
-    return null;
-  }
-
-  return user.organizationId;
-}
+// A `resolveClinicOrganizationIdByAuthUserId` helper used to live here so the
+// clinic routes could resolve a workspace from an `X-Clinic-Auth-User-Id` header.
+// It was removed along with that header: naming an account is not the same as
+// proving you control it. Clinic routes now read the workspace from the verified
+// session actor (see auth/middleware.ts and clinic/router.ts).
