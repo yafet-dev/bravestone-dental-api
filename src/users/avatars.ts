@@ -1,6 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import { mkdir, readdir, rm, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
+import sharp from 'sharp';
 import { AuthError } from '../auth/accounts';
 import { prisma } from '../db';
 
@@ -61,20 +62,56 @@ function buildPublicUrl(relativePath: string) {
   return new URL(`/uploads/avatars/${relativePath}`, baseUrl.endsWith('/') ? baseUrl : `${baseUrl}/`).toString();
 }
 
+/** Stored edge length. Enough for a retina 96px avatar without holding a full photo. */
+const avatarDimension = 512;
+
+/**
+ * Squares, resizes and re-encodes a profile picture.
+ *
+ * The browser sends an already-cropped square (see `AvatarCropper`), but a client is
+ * never the last word on what reaches disk: a hand-made request could post a 20MP
+ * portrait. Cropping to a centred square here means the circular avatar in the UI can
+ * never be a stretched or lopsided image whatever arrives.
+ *
+ * Also drops EXIF, which is the point on a phone photo — those carry GPS coordinates,
+ * and an avatar is shown to the whole clinic.
+ */
+async function normalizeAvatar(contents: Buffer) {
+  try {
+    return await sharp(contents, { failOn: 'error' })
+      // Orientation is applied before metadata is discarded, or portrait photos
+      // arrive rotated.
+      .rotate()
+      .resize({
+        fit: 'cover',
+        height: avatarDimension,
+        position: 'centre',
+        width: avatarDimension,
+        withoutEnlargement: true,
+      })
+      .webp({ quality: 88 })
+      .toBuffer();
+  } catch {
+    throw new AuthError(400, 'unsupported_image', 'That file is not a readable image.');
+  }
+}
+
 export async function saveUserAvatar(input: { dataUrl: unknown; userId: string }) {
-  const { contents, extension } = parseImageDataUrl(input.dataUrl);
+  const { contents: rawContents } = parseImageDataUrl(input.dataUrl);
   const user = await prisma.user.findUnique({ where: { id: input.userId } });
 
   if (!user) {
     throw new AuthError(404, 'user_not_found', 'This account no longer exists.');
   }
 
+  const contents = await normalizeAvatar(rawContents);
+
   // One folder per user, holding exactly one current picture.
   const folder = join(avatarsRoot, user.id);
   await mkdir(folder, { recursive: true });
 
   const previousFiles = await readdir(folder).catch(() => [] as string[]);
-  const fileName = `profile-${Date.now()}-${randomBytes(4).toString('hex')}.${extension}`;
+  const fileName = `profile-${Date.now()}-${randomBytes(4).toString('hex')}.webp`;
   await writeFile(join(folder, fileName), contents);
   await Promise.all(previousFiles.map((previous) => rm(join(folder, previous), { force: true })));
 

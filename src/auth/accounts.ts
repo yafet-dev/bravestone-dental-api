@@ -4,10 +4,8 @@ import { sendMail, type MailResult } from '../mail/mailer';
 import { buildPasswordResetEmail, buildVerificationEmail } from '../mail/templates';
 import {
   createEmailToken,
-  createSessionToken,
   describePasswordIssue,
   emailVerificationTtlMs,
-  getSessionTtlSeconds,
   hashEmailToken,
   hashPassword,
   isValidEmail,
@@ -15,51 +13,20 @@ import {
   passwordResetTtlMs,
   verifyPassword,
 } from './credentials';
+import { AuthError } from './errors';
+import { lockUserSecurityState } from './securityState';
+import {
+  buildAuthenticatedResponse,
+  toPublicUser,
+  type SessionClientMetadata,
+} from './sessions';
+import { completePrimaryAuthentication } from './twoFactor';
+
+export { AuthError } from './errors';
+export { toPublicUser, type PublicUser } from './sessions';
 
 export const emailVerificationTokenType = 'email_verify';
 export const passwordResetTokenType = 'password_reset';
-
-/**
- * Errors that map onto a specific HTTP status and a machine-readable code the
- * browser app switches on (for example to show the "resend verification" panel).
- */
-export class AuthError extends Error {
-  code: string;
-  status: number;
-
-  constructor(status: number, code: string, message: string) {
-    super(message);
-    this.name = 'AuthError';
-    this.code = code;
-    this.status = status;
-  }
-}
-
-export type PublicUser = {
-  avatarUrl: string | null;
-  email: string;
-  emailVerified: boolean;
-  fullName: string;
-  id: string;
-  mustChangePassword: boolean;
-  organizationId: string | null;
-  role: string;
-  status: string;
-};
-
-export function toPublicUser(user: User): PublicUser {
-  return {
-    avatarUrl: user.avatarUrl,
-    email: user.email,
-    emailVerified: Boolean(user.emailVerifiedAt),
-    fullName: user.fullName,
-    id: user.id,
-    mustChangePassword: user.mustChangePassword,
-    organizationId: user.organizationId,
-    role: user.role,
-    status: user.status,
-  };
-}
 
 function normalizeFullName(fullName: unknown, email: string) {
   const trimmed = typeof fullName === 'string' ? fullName.trim().replace(/\s+/g, ' ') : '';
@@ -69,13 +36,6 @@ function normalizeFullName(fullName: unknown, email: string) {
   }
 
   return email.split('@')[0] || 'Clinic User';
-}
-
-function buildSession(user: User) {
-  return {
-    expiresIn: getSessionTtlSeconds(),
-    token: createSessionToken({ email: user.email, role: user.role, userId: user.id }),
-  };
 }
 
 /**
@@ -190,7 +150,7 @@ export async function registerAccount(input: { email: unknown; fullName: unknown
   };
 }
 
-export async function verifyEmailAddress(token: unknown) {
+export async function verifyEmailAddress(token: unknown, sessionMetadata: SessionClientMetadata) {
   const record = await consumeEmailToken(typeof token === 'string' ? token : '', emailVerificationTokenType);
 
   if (!record) {
@@ -198,23 +158,64 @@ export async function verifyEmailAddress(token: unknown) {
   }
 
   const now = new Date();
-  const [, user] = await prisma.$transaction([
-    prisma.authToken.update({ where: { id: record.id }, data: { consumedAt: now } }),
-    prisma.user.update({
+  const { twoFactorEnabled, user } = await prisma.$transaction(async (transaction) => {
+    if (!(await lockUserSecurityState(transaction, record.userId))) {
+      throw new AuthError(400, 'invalid_token', 'This verification link is invalid or has expired. Request a new one.');
+    }
+    const currentUser = await transaction.user.findUnique({ where: { id: record.userId } });
+
+    if (!currentUser) {
+      throw new AuthError(400, 'invalid_token', 'This verification link is invalid or has expired. Request a new one.');
+    }
+
+    const consumed = await transaction.authToken.updateMany({
+      where: {
+        consumedAt: null,
+        expiresAt: { gt: now },
+        id: record.id,
+        type: emailVerificationTokenType,
+      },
+      data: { consumedAt: now },
+    });
+
+    if (consumed.count !== 1) {
+      throw new AuthError(400, 'invalid_token', 'This verification link is invalid or has expired. Request a new one.');
+    }
+
+    const updatedUser = await transaction.user.update({
       where: { id: record.userId },
       data: {
-        authUserId: record.user.authUserId || record.user.id,
-        emailVerifiedAt: record.user.emailVerifiedAt || now,
-        status: record.user.status === 'banned' ? 'banned' : 'active',
+        authUserId: currentUser.authUserId || currentUser.id,
+        emailVerifiedAt: currentUser.emailVerifiedAt || now,
+        status: currentUser.status === 'banned' ? 'banned' : 'active',
       },
-    }),
-  ]);
+    });
+    const credential = await transaction.userTwoFactorCredential.findUnique({
+      where: { userId: record.userId },
+      select: { enabledAt: true },
+    });
+
+    return {
+      twoFactorEnabled: Boolean(credential?.enabledAt),
+      user: updatedUser,
+    };
+  });
 
   if (user.status === 'banned') {
     throw new AuthError(403, 'account_banned', 'This account has been suspended. Contact your clinic administrator.');
   }
 
-  return { session: buildSession(user), user: toPublicUser(user) };
+  if (twoFactorEnabled) {
+    return {
+      loginRequired: true as const,
+      user: toPublicUser(user, true),
+    };
+  }
+
+  return {
+    ...await buildAuthenticatedResponse(user, false, sessionMetadata),
+    loginRequired: false as const,
+  };
 }
 
 /**
@@ -243,7 +244,11 @@ export async function resendVerificationEmail(rawEmail: unknown) {
   };
 }
 
-export async function loginWithPassword(input: { email: unknown; password: unknown }) {
+export async function loginWithPassword(input: {
+  email: unknown;
+  password: unknown;
+  sessionMetadata: SessionClientMetadata;
+}) {
   const email = normalizeEmail(input.email);
   const password = typeof input.password === 'string' ? input.password : '';
 
@@ -276,16 +281,9 @@ export async function loginWithPassword(input: { email: unknown; password: unkno
     throw new AuthError(403, 'email_not_verified', 'Verify your email address before signing in. We can send a new link.');
   }
 
-  const signedInUser = await prisma.user.update({
-    where: { id: user.id },
-    data: {
-      authUserId: user.authUserId || user.id,
-      lastActiveAt: new Date(),
-      status: 'active',
-    },
-  });
-
-  return { session: buildSession(signedInUser), user: toPublicUser(signedInUser) };
+  // Do not mutate account activity or lifecycle state until every required
+  // authentication factor has succeeded.
+  return completePrimaryAuthentication(user, input.sessionMetadata);
 }
 
 export async function requestPasswordReset(rawEmail: unknown) {
@@ -334,28 +332,69 @@ export async function resetPasswordWithToken(input: { password: unknown; token: 
 
   const now = new Date();
   const passwordHash = await hashPassword(password);
-  const [, , user] = await prisma.$transaction([
-    prisma.authToken.update({ where: { id: record.id }, data: { consumedAt: now } }),
-    // Any outstanding session-independent tokens are void once the password moves.
-    prisma.authToken.deleteMany({ where: { userId: record.userId, consumedAt: null } }),
-    prisma.user.update({
+  await prisma.$transaction(async (transaction) => {
+    if (!(await lockUserSecurityState(transaction, record.userId))) {
+      throw new AuthError(400, 'invalid_token', 'This reset link is invalid or has expired. Request a new one.');
+    }
+    const currentUser = await transaction.user.findUnique({ where: { id: record.userId } });
+
+    if (!currentUser) {
+      throw new AuthError(400, 'invalid_token', 'This reset link is invalid or has expired. Request a new one.');
+    }
+
+    if (currentUser.status === 'banned') {
+      throw new AuthError(403, 'account_banned', 'This account has been suspended. Contact your clinic administrator.');
+    }
+
+    const consumed = await transaction.authToken.updateMany({
+      where: {
+        consumedAt: null,
+        expiresAt: { gt: now },
+        id: record.id,
+        type: passwordResetTokenType,
+      },
+      data: { consumedAt: now },
+    });
+
+    if (consumed.count !== 1) {
+      throw new AuthError(400, 'invalid_token', 'This reset link is invalid or has expired. Request a new one.');
+    }
+
+    // Any outstanding session-independent tokens and pre-auth challenges are
+    // void once the password moves.
+    await transaction.authToken.deleteMany({ where: { userId: record.userId, consumedAt: null } });
+    await transaction.twoFactorLoginChallenge.deleteMany({ where: { userId: record.userId } });
+    await transaction.authSession.updateMany({
+      where: { userId: record.userId, revokedAt: null },
+      data: { revokedAt: now },
+    });
+    await transaction.user.update({
       where: { id: record.userId },
       data: {
-        authUserId: record.user.authUserId || record.user.id,
+        authVersion: { increment: 1 },
+        authUserId: currentUser.authUserId || currentUser.id,
         // Completing a reset proves control of the mailbox, so it doubles as
         // verification for accounts that never confirmed their address.
-        emailVerifiedAt: record.user.emailVerifiedAt || now,
+        emailVerifiedAt: currentUser.emailVerifiedAt || now,
         mustChangePassword: false,
         passwordHash,
         status: 'active',
       },
-    }),
-  ]);
+    });
+  });
 
-  return { session: buildSession(user), user: toPublicUser(user) };
+  // A password-reset email must never become a path around an enabled second
+  // factor. The browser returns to login, where MFA is enforced normally.
+  return { completed: true };
 }
 
-export async function changeOwnPassword(input: { currentPassword: unknown; newPassword: unknown; userId: string }) {
+export async function changeOwnPassword(input: {
+  authVersion: number;
+  currentPassword: unknown;
+  newPassword: unknown;
+  sessionMetadata: SessionClientMetadata;
+  userId: string;
+}) {
   const currentPassword = typeof input.currentPassword === 'string' ? input.currentPassword : '';
   const newPassword = typeof input.newPassword === 'string' ? input.newPassword : '';
   const passwordIssue = describePasswordIssue(newPassword);
@@ -374,19 +413,65 @@ export async function changeOwnPassword(input: { currentPassword: unknown; newPa
     throw new AuthError(400, 'invalid_credentials', 'Your current password is not correct.');
   }
 
-  const updatedUser = await prisma.user.update({
-    where: { id: user.id },
-    data: {
-      mustChangePassword: false,
-      passwordHash: await hashPassword(newPassword),
-    },
-  });
+  const passwordHash = await hashPassword(newPassword);
+  const now = new Date();
+  const updatedUser = await prisma.$transaction(async (transaction) => {
+    if (!(await lockUserSecurityState(transaction, user.id))) {
+      throw new AuthError(404, 'user_not_found', 'This account no longer exists.');
+    }
+    const currentUser = await transaction.user.findUnique({ where: { id: user.id } });
 
-  return { session: buildSession(updatedUser), user: toPublicUser(updatedUser) };
+    if (!currentUser) {
+      throw new AuthError(404, 'user_not_found', 'This account no longer exists.');
+    }
+
+    if (currentUser.status === 'banned') {
+      throw new AuthError(403, 'account_banned', 'This account has been suspended. Contact your clinic administrator.');
+    }
+
+    if (
+      currentUser.authVersion !== input.authVersion
+      || currentUser.passwordHash !== user.passwordHash
+    ) {
+      throw new AuthError(
+        409,
+        'authentication_state_changed',
+        'Your account security changed. Sign in again before continuing.',
+      );
+    }
+
+    // Password changes revoke existing sessions through authVersion and must
+    // also burn any session-independent login or email challenges issued under
+    // the previous password.
+    await transaction.twoFactorLoginChallenge.deleteMany({ where: { userId: user.id } });
+    await transaction.authToken.deleteMany({ where: { userId: user.id, consumedAt: null } });
+    await transaction.authSession.updateMany({
+      where: { userId: user.id, revokedAt: null },
+      data: { revokedAt: now },
+    });
+
+    return transaction.user.update({
+      where: { id: user.id },
+      data: {
+        authVersion: { increment: 1 },
+        mustChangePassword: false,
+        passwordHash,
+      },
+    });
+  });
+  const twoFactorEnabled = Boolean((await prisma.userTwoFactorCredential.findUnique({
+    where: { userId: user.id },
+    select: { enabledAt: true },
+  }))?.enabledAt);
+
+  return buildAuthenticatedResponse(updatedUser, twoFactorEnabled, input.sessionMetadata);
 }
 
 export async function getAccountById(userId: string) {
-  const user = await prisma.user.findUnique({ where: { id: userId } });
+  const user = await prisma.user.findUnique({
+    where: { id: userId },
+    include: { twoFactorCredential: { select: { enabledAt: true } } },
+  });
 
   if (!user) {
     throw new AuthError(404, 'user_not_found', 'This account no longer exists.');
@@ -396,5 +481,5 @@ export async function getAccountById(userId: string) {
     throw new AuthError(403, 'account_banned', 'This account has been suspended. Contact your clinic administrator.');
   }
 
-  return toPublicUser(user);
+  return toPublicUser(user, Boolean(user.twoFactorCredential?.enabledAt));
 }

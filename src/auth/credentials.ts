@@ -11,8 +11,10 @@ export const passwordResetTtlMs = 60 * 60 * 1000;
 export const invitationTtlMs = 7 * 24 * 60 * 60 * 1000;
 
 export type SessionTokenPayload = {
+  authVersion: number;
   email: string;
   role: string;
+  sessionId: string;
   userId: string;
 };
 
@@ -63,9 +65,12 @@ export function describePasswordIssue(password: string) {
 }
 
 export function createSessionToken(payload: SessionTokenPayload) {
-  return jwt.sign(payload, getSessionSecret(), {
+  const { sessionId, ...claims } = payload;
+
+  return jwt.sign(claims, getSessionSecret(), {
     algorithm: 'HS256',
     expiresIn: sessionTtlSeconds,
+    jwtid: sessionId,
   });
 }
 
@@ -77,16 +82,31 @@ export function readSessionToken(token: string): SessionTokenPayload | null {
       return null;
     }
 
-    const { email, role, userId } = decoded as Record<string, unknown>;
+    const { authVersion, email, jti, role, userId } = decoded as Record<string, unknown>;
 
-    if (typeof email !== 'string' || typeof role !== 'string' || typeof userId !== 'string') {
+    if (
+      typeof email !== 'string'
+      || typeof jti !== 'string'
+      || !jti
+      || typeof role !== 'string'
+      || typeof userId !== 'string'
+      || !Number.isInteger(authVersion)
+      || Number(authVersion) < 0
+    ) {
       return null;
     }
 
-    return { email, role, userId };
+    // A server-owned session id is required. Tokens issued before device-session
+    // tracking intentionally require one fresh sign-in because they cannot be
+    // enumerated or revoked individually.
+    return { authVersion: Number(authVersion), email, role, sessionId: jti, userId };
   } catch {
     return null;
   }
+}
+
+export function hashSessionToken(token: string) {
+  return createHash('sha256').update(token).digest('hex');
 }
 
 export function getSessionTtlSeconds() {

@@ -1,14 +1,19 @@
 import type { NextFunction, Request, Response } from 'express';
 import { isSuperAdminRole } from '../clinic/roles';
 import { prisma } from '../db';
-import { readSessionToken } from './credentials';
+import { hashSessionToken, readSessionToken } from './credentials';
+import { readSessionClientMetadata } from './sessions';
+
+const lastSeenWriteIntervalMs = 5 * 60 * 1000;
 
 export type RequestActor = {
+  authVersion: number;
   email: string;
   fullName: string;
   id: string;
   organizationId: string | null;
   role: string;
+  sessionId: string;
 };
 
 declare module 'express-serve-static-core' {
@@ -46,18 +51,52 @@ export async function resolveRequestActor(request: Request): Promise<RequestActo
     return null;
   }
 
-  const user = await prisma.user.findUnique({ where: { id: session.userId } });
+  const storedSession = await prisma.authSession.findUnique({
+    where: { id: session.sessionId },
+    include: { user: true },
+  });
+  const now = new Date();
+  const user = storedSession?.user;
 
-  if (!user || user.status === 'banned') {
+  if (
+    !storedSession
+    || !user
+    || storedSession.authVersion !== session.authVersion
+    || storedSession.expiresAt.getTime() <= now.getTime()
+    || storedSession.revokedAt
+    || storedSession.tokenHash !== hashSessionToken(token)
+    || storedSession.userId !== session.userId
+    || user.status === 'banned'
+    || user.authVersion !== session.authVersion
+  ) {
     return null;
   }
 
+  if (storedSession.lastSeenAt.getTime() <= now.getTime() - lastSeenWriteIntervalMs) {
+    const metadata = readSessionClientMetadata(request);
+
+    await prisma.authSession.updateMany({
+      where: {
+        id: storedSession.id,
+        lastSeenAt: { lte: new Date(now.getTime() - lastSeenWriteIntervalMs) },
+        revokedAt: null,
+      },
+      data: {
+        ipAddress: metadata.ipAddress,
+        lastSeenAt: now,
+        userAgent: metadata.userAgent,
+      },
+    });
+  }
+
   return {
+    authVersion: user.authVersion,
     email: user.email,
     fullName: user.fullName,
     id: user.id,
     organizationId: user.organizationId,
     role: user.role,
+    sessionId: storedSession.id,
   };
 }
 

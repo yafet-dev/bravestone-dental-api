@@ -1,5 +1,20 @@
 import type { Response } from 'express';
-import { AuthError } from './accounts';
+
+/**
+ * An authentication failure with both a safe browser-facing message and a
+ * stable machine-readable code.
+ */
+export class AuthError extends Error {
+  code: string;
+  status: number;
+
+  constructor(status: number, code: string, message: string) {
+    super(message);
+    this.name = 'AuthError';
+    this.code = code;
+    this.status = status;
+  }
+}
 
 /**
  * Turns an {@link AuthError} into its HTTP response and reports whether it was

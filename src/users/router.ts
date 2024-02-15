@@ -1,11 +1,11 @@
-import { Router } from 'express';
+import express, { Router } from 'express';
 import { sendAuthError } from '../auth/errors';
 import { requireAuth } from '../auth/middleware';
 import { saveUserAvatar } from './avatars';
 
 export const usersRouter = Router();
 
-usersRouter.post('/me/avatar', requireAuth, async (request, response, next) => {
+usersRouter.post('/me/avatar', requireAuth, express.json({ limit: '8mb' }), async (request, response, next) => {
   try {
     response.json(await saveUserAvatar({
       dataUrl: request.body?.dataUrl,

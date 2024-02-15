@@ -132,6 +132,41 @@ export async function syncSessionUser(input: SyncSessionUserInput) {
           status: 'active',
         },
       });
+  const normalizedClinicName = clinicState?.organizationProfile.name.trim().toLowerCase() || '';
+  const legacyOnboardingIncomplete = Boolean(
+    !input.isAdmin
+    && targetOrganizationId
+    && targetOrganizationId !== clinicOrganizationId
+    && clinicState
+    && (
+      !normalizedClinicName
+      || normalizedClinicName === 'your clinic'
+      || normalizedClinicName === `${fullName.trim().toLowerCase()}'s clinic`
+      || clinicState.branches.length === 0
+      || (
+        clinicState.branches.length === 1
+        && clinicState.branches[0]?.name.trim().toLowerCase() === 'main branch'
+        && !clinicState.branches[0]?.city.trim()
+        && (
+          !clinicState.branches[0]?.manager.trim()
+          || clinicState.branches[0]?.manager.trim().toLowerCase() === fullName.trim().toLowerCase()
+        )
+      )
+    )
+  );
+
+  if (legacyOnboardingIncomplete && targetOrganizationId) {
+    await prisma.organization.updateMany({
+      where: {
+        id: targetOrganizationId,
+        status: 'trial',
+      },
+      data: {
+        status: 'onboarding',
+      },
+    });
+  }
+
   const organizationStatus = targetOrganizationId
     ? (
         await prisma.organization.findUnique({

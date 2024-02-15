@@ -1,4 +1,4 @@
-import { Router } from 'express';
+import { Router, type Response } from 'express';
 import { isSuperAdminRole } from '../clinic/roles';
 import {
   changeOwnPassword,
@@ -11,11 +11,36 @@ import {
   verifyEmailAddress,
 } from './accounts';
 import { sendAuthError } from './errors';
-import { accountCredentialRateLimit, credentialRateLimit, emailDispatchRateLimit } from './rateLimits';
+import {
+  accountCredentialRateLimit,
+  credentialRateLimit,
+  emailDispatchRateLimit,
+  twoFactorLoginRateLimit,
+  twoFactorSecurityRateLimit,
+} from './rateLimits';
 import { requireAuth } from './middleware';
 import { syncSessionUser } from './service';
+import {
+  beginTwoFactorSetup,
+  confirmTwoFactorSetup,
+  disableTwoFactor,
+  getTwoFactorStatus,
+  regenerateRecoveryCodes,
+  verifyTwoFactorLogin,
+} from './twoFactor';
+import {
+  listActiveSessions,
+  readSessionClientMetadata,
+  revokeActiveSession,
+  revokeOtherSessions,
+} from './sessions';
 
 export const authRouter = Router();
+
+function preventSensitiveResponseCaching(response: Response) {
+  response.set('Cache-Control', 'no-store');
+  response.set('Pragma', 'no-cache');
+}
 
 authRouter.post('/register', emailDispatchRateLimit, credentialRateLimit, async (request, response, next) => {
   try {
@@ -37,7 +62,11 @@ authRouter.post('/register', emailDispatchRateLimit, credentialRateLimit, async 
 
 authRouter.post('/verify-email', credentialRateLimit, async (request, response, next) => {
   try {
-    response.json(await verifyEmailAddress(request.body?.token));
+    preventSensitiveResponseCaching(response);
+    response.json(await verifyEmailAddress(
+      request.body?.token,
+      readSessionClientMetadata(request),
+    ));
   } catch (error) {
     if (!sendAuthError(error, response)) {
       next(error);
@@ -57,9 +86,26 @@ authRouter.post('/resend-verification', emailDispatchRateLimit, async (request, 
 
 authRouter.post('/login', accountCredentialRateLimit, credentialRateLimit, async (request, response, next) => {
   try {
+    preventSensitiveResponseCaching(response);
     response.json(await loginWithPassword({
       email: request.body?.email,
       password: request.body?.password,
+      sessionMetadata: readSessionClientMetadata(request),
+    }));
+  } catch (error) {
+    if (!sendAuthError(error, response)) {
+      next(error);
+    }
+  }
+});
+
+authRouter.post('/two-factor/verify-login', twoFactorLoginRateLimit, credentialRateLimit, async (request, response, next) => {
+  try {
+    preventSensitiveResponseCaching(response);
+    response.json(await verifyTwoFactorLogin({
+      challengeToken: request.body?.challengeToken,
+      code: request.body?.code,
+      sessionMetadata: readSessionClientMetadata(request),
     }));
   } catch (error) {
     if (!sendAuthError(error, response)) {
@@ -101,11 +147,155 @@ authRouter.get('/me', requireAuth, async (request, response, next) => {
   }
 });
 
+authRouter.get('/sessions', requireAuth, async (request, response, next) => {
+  try {
+    preventSensitiveResponseCaching(response);
+    response.json({
+      sessions: await listActiveSessions({
+        authVersion: request.actor!.authVersion,
+        currentSessionId: request.actor!.sessionId,
+        userId: request.actor!.id,
+      }),
+    });
+  } catch (error) {
+    if (!sendAuthError(error, response)) {
+      next(error);
+    }
+  }
+});
+
+authRouter.delete('/sessions/:sessionId', requireAuth, credentialRateLimit, async (request, response, next) => {
+  try {
+    preventSensitiveResponseCaching(response);
+    response.json(await revokeActiveSession({
+      authVersion: request.actor!.authVersion,
+      currentSessionId: request.actor!.sessionId,
+      sessionId: request.params.sessionId,
+      userId: request.actor!.id,
+    }));
+  } catch (error) {
+    if (!sendAuthError(error, response)) {
+      next(error);
+    }
+  }
+});
+
+authRouter.post('/sessions/revoke-others', requireAuth, credentialRateLimit, async (request, response, next) => {
+  try {
+    preventSensitiveResponseCaching(response);
+    response.json(await revokeOtherSessions({
+      authVersion: request.actor!.authVersion,
+      currentSessionId: request.actor!.sessionId,
+      metadata: readSessionClientMetadata(request),
+      userId: request.actor!.id,
+    }));
+  } catch (error) {
+    if (!sendAuthError(error, response)) {
+      next(error);
+    }
+  }
+});
+
+authRouter.post('/logout', requireAuth, credentialRateLimit, async (request, response, next) => {
+  try {
+    preventSensitiveResponseCaching(response);
+    response.json(await revokeActiveSession({
+      authVersion: request.actor!.authVersion,
+      currentSessionId: request.actor!.sessionId,
+      sessionId: request.actor!.sessionId,
+      userId: request.actor!.id,
+    }));
+  } catch (error) {
+    if (!sendAuthError(error, response)) {
+      next(error);
+    }
+  }
+});
+
+authRouter.get('/two-factor/status', requireAuth, async (request, response, next) => {
+  try {
+    preventSensitiveResponseCaching(response);
+    response.json(await getTwoFactorStatus(request.actor!.id));
+  } catch (error) {
+    if (!sendAuthError(error, response)) {
+      next(error);
+    }
+  }
+});
+
+authRouter.post('/two-factor/setup', requireAuth, twoFactorSecurityRateLimit, async (request, response, next) => {
+  try {
+    preventSensitiveResponseCaching(response);
+    response.json(await beginTwoFactorSetup({
+      authVersion: request.actor!.authVersion,
+      currentPassword: request.body?.currentPassword,
+      userId: request.actor!.id,
+    }));
+  } catch (error) {
+    if (!sendAuthError(error, response)) {
+      next(error);
+    }
+  }
+});
+
+authRouter.post('/two-factor/confirm', requireAuth, twoFactorSecurityRateLimit, async (request, response, next) => {
+  try {
+    preventSensitiveResponseCaching(response);
+    response.json(await confirmTwoFactorSetup({
+      authVersion: request.actor!.authVersion,
+      code: request.body?.code,
+      sessionMetadata: readSessionClientMetadata(request),
+      userId: request.actor!.id,
+    }));
+  } catch (error) {
+    if (!sendAuthError(error, response)) {
+      next(error);
+    }
+  }
+});
+
+authRouter.post('/two-factor/disable', requireAuth, twoFactorSecurityRateLimit, async (request, response, next) => {
+  try {
+    preventSensitiveResponseCaching(response);
+    response.json(await disableTwoFactor({
+      authVersion: request.actor!.authVersion,
+      code: request.body?.code,
+      currentPassword: request.body?.currentPassword,
+      sessionMetadata: readSessionClientMetadata(request),
+      userId: request.actor!.id,
+    }));
+  } catch (error) {
+    if (!sendAuthError(error, response)) {
+      next(error);
+    }
+  }
+});
+
+authRouter.post('/two-factor/recovery-codes/regenerate', requireAuth, twoFactorSecurityRateLimit, async (request, response, next) => {
+  try {
+    preventSensitiveResponseCaching(response);
+    response.json(await regenerateRecoveryCodes({
+      authVersion: request.actor!.authVersion,
+      code: request.body?.code,
+      currentPassword: request.body?.currentPassword,
+      sessionMetadata: readSessionClientMetadata(request),
+      userId: request.actor!.id,
+    }));
+  } catch (error) {
+    if (!sendAuthError(error, response)) {
+      next(error);
+    }
+  }
+});
+
 authRouter.post('/change-password', credentialRateLimit, requireAuth, async (request, response, next) => {
   try {
+    preventSensitiveResponseCaching(response);
     response.json(await changeOwnPassword({
+      authVersion: request.actor!.authVersion,
       currentPassword: request.body?.currentPassword,
       newPassword: request.body?.newPassword,
+      sessionMetadata: readSessionClientMetadata(request),
       userId: request.actor!.id,
     }));
   } catch (error) {

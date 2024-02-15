@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import type { Request, Response } from 'express';
 import rateLimit, { ipKeyGenerator, type AugmentedRequest, type Options } from 'express-rate-limit';
 
@@ -103,6 +104,41 @@ export const emailDispatchRateLimit = rateLimit({
   limit: 15,
   skipFailedRequests: true,
   handler: buildHandler('Too many emails requested from this device.'),
+});
+
+/**
+ * Authenticated MFA changes require the account password and are keyed by both
+ * actor and client address. Successful setup/status actions do not consume the
+ * guessing budget.
+ */
+export const twoFactorSecurityRateLimit = rateLimit({
+  ...sharedOptions,
+  windowMs: fiveMinutes,
+  limit: 10,
+  skipSuccessfulRequests: true,
+  keyGenerator: (request) => `${request.actor?.id || 'anonymous'}::${ipKeyGenerator(request.ip || '')}`,
+  handler: buildHandler('Too many incorrect security-code attempts.'),
+});
+
+/**
+ * The database challenge also has a five-attempt hard cap. This coarser limiter
+ * slows distributed guessing at the HTTP edge without retaining the opaque
+ * challenge itself in the rate-limit store.
+ */
+export const twoFactorLoginRateLimit = rateLimit({
+  ...sharedOptions,
+  windowMs: fiveMinutes,
+  limit: 20,
+  skipSuccessfulRequests: true,
+  keyGenerator: (request) => {
+    const challengeToken = (request.body as { challengeToken?: unknown } | undefined)?.challengeToken;
+    const challengeKey = typeof challengeToken === 'string' && challengeToken
+      ? createHash('sha256').update(challengeToken).digest('hex')
+      : 'missing';
+
+    return `${ipKeyGenerator(request.ip || '')}::${challengeKey}`;
+  },
+  handler: buildHandler('Too many incorrect login-code attempts.'),
 });
 
 /**
