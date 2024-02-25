@@ -40,6 +40,35 @@ export function roleSlug(value: string | null | undefined): string {
     .replace(/^_+|_+$/g, '');
 }
 
+/** True when the role grants platform Super Admin console access. */
+export function isSuperAdminRole(role: string | null | undefined): boolean {
+  return roleSlug(role) === 'super_admin' || roleSlug(role) === 'platform_admin';
+}
+
+/**
+ * Roles that may administer their own clinic: staff, branches, and the role
+ * grant grid — and which therefore always see financial detail.
+ *
+ * This is an explicit list rather than a substring test on the word "admin". It
+ * used to be the latter, which meant a clinic admin who created a role called
+ * "Records Admin" or "Admin Assistant" silently handed it full financial
+ * visibility and the ability to rewrite every other role's permissions. Every
+ * role the app actually issues is covered here; a custom role gets its access
+ * from its grants, not from its name.
+ */
+const clinicAdminRoles = new Set([
+  'clinic_admin',
+  'clinic_owner',
+  'owner',
+  'platform_admin',
+  'super_admin',
+]);
+
+/** True when the role may administer their own clinic (mirrors lib/roles.ts). */
+export function isClinicAdminRole(role: string | null | undefined): boolean {
+  return clinicAdminRoles.has(roleSlug(role));
+}
+
 /** Friendly label for a role slug. Falls back to Title Case for unknown slugs. */
 export function roleLabel(role: string | null | undefined): string {
   const slug = roleSlug(role);

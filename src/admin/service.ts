@@ -370,7 +370,6 @@ export async function getAdminState() {
 export async function replaceAdminState(state: AdminBootstrapState) {
   const visibleOrganizations = state.organizations.filter((organization) => !isHiddenAdminOrganization(organization));
   const visibleOrganizationIds = visibleOrganizations.map((organization) => organization.id);
-  const visibleInvitations = state.invitations.filter((invitation) => visibleOrganizationIds.includes(invitation.organizationId));
   const branchIdsByOrganizationName = new Map<string, string>();
 
   visibleOrganizations.forEach((organization) => {
@@ -639,51 +638,11 @@ export async function replaceAdminState(state: AdminBootstrapState) {
       }
     }
 
-    const visibleInvitationIds = visibleInvitations.map((invitation) => invitation.id);
-
-    if (visibleOrganizationIds.length > 0) {
-      await transaction.invitation.deleteMany({
-        where: visibleInvitationIds.length > 0
-          ? {
-              organizationId: {
-                in: visibleOrganizationIds,
-              },
-              id: {
-                notIn: visibleInvitationIds,
-              },
-            }
-          : {
-              organizationId: {
-                in: visibleOrganizationIds,
-              },
-            },
-      });
-    }
-
-    for (const invitation of visibleInvitations) {
-      await transaction.invitation.upsert({
-        where: { id: invitation.id },
-        create: {
-          id: invitation.id,
-          organizationId: invitation.organizationId,
-          branchId: branchIdsByOrganizationName.get(branchKey(invitation.organizationId, invitation.branchName)) || null,
-          email: invitation.email,
-          role: invitation.role,
-          sentAt: parseRequiredDate(invitation.sentAt),
-          expiresAt: parseRequiredDate(invitation.expiresAt),
-          status: invitation.status,
-        },
-        update: {
-          organizationId: invitation.organizationId,
-          branchId: branchIdsByOrganizationName.get(branchKey(invitation.organizationId, invitation.branchName)) || null,
-          email: invitation.email,
-          role: invitation.role,
-          sentAt: parseRequiredDate(invitation.sentAt),
-          expiresAt: parseRequiredDate(invitation.expiresAt),
-          status: invitation.status,
-        },
-      });
-    }
+    // Invitations are deliberately NOT written here. They carry a single-use
+    // token hash and acceptance state that only /api/invitations may change;
+    // round-tripping them through this snapshot would invalidate live links and
+    // delete invitations the console has not loaded yet. The bootstrap read still
+    // returns them so the console can display them.
 
     await transaction.superAdminProfile.upsert({
       where: { id: 'primary' },
