@@ -1,3 +1,4 @@
+import { defaultFeaturesForRole } from './permissions';
 import type { ClinicWorkspaceState } from './types';
 
 const doctorWeekdays = [
@@ -31,34 +32,6 @@ const clinicBranches: ClinicWorkspaceState['branches'] = [
   { id: 'kazanchis', name: 'Kazanchis Branch', city: 'Addis Ababa', manager: 'Maya Patel', status: 'Opening soon' },
   { id: 'bole', name: 'Bole Branch', city: 'Addis Ababa', manager: 'Noah Reed', status: 'Active' },
 ];
-
-const sidebarFeatureOptions = [
-  'Dashboard',
-  'Patients',
-  'Appointments',
-  'Doctors',
-  'Dental Charting',
-  'Prescriptions',
-  'Sick Leave',
-  'Finance',
-  'Billing',
-  'Reports',
-  'AI Assistant',
-  'Organization',
-  'Settings',
-];
-
-const defaultFeaturesForRole = (role: string) => {
-  if (role === 'super_admin') return sidebarFeatureOptions;
-  if (role === 'clinic_admin') return ['Dashboard', 'Patients', 'Appointments', 'Doctors', 'Reports', 'Organization', 'Settings'];
-  if (role === 'dentist') return ['Patients', 'Appointments', 'Dental Charting', 'Prescriptions', 'Sick Leave'];
-  if (role === 'receptionist') return ['Dashboard', 'Patients', 'Appointments', 'Sick Leave'];
-  if (role === 'cashier') return ['Billing', 'Finance'];
-  if (role === 'prescription_assistant' || role === 'pharmacist') return ['Prescriptions', 'Patients'];
-  if (role === 'accountant') return ['Finance', 'Billing', 'Reports'];
-  if (role === 'nurse_assistant') return ['Patients', 'Appointments', 'Sick Leave', 'Dental Charting'];
-  return ['Dashboard'];
-};
 
 const defaultClinicUserPreferences = {
   appointmentReminders: true,
@@ -327,7 +300,12 @@ export const clinicSeedState: ClinicWorkspaceState = {
       doctorAction: 'Clinical exam completed and fluoride varnish applied.',
       medicine: 'Ibuprofen 400mg as needed',
       followUp: 'Return in 14 days for restoration review.',
-      attachments: ['xray-18-apr-15.png'],
+      attachments: [{
+        id: 'attachment-dx1-xray',
+        name: 'xray-18-apr-15.png',
+        type: 'image/png',
+        dataUrl: '',
+      }],
     },
     {
       id: 'dx2',
@@ -400,25 +378,27 @@ export const clinicSeedState: ClinicWorkspaceState = {
     { id: 'u4', name: 'Noah Reed', email: 'noah@bravestonelabs.com', role: 'pharmacist', status: 'Active', lastActive: '1 hour ago', branchId: 'bole', phone: '+251 91 100 0004', defaultBranchId: 'bole', emailSignature: 'Noah Reed\nPharmacist\nBright Smile Dental Clinic', preferences: defaultClinicUserPreferences },
     { id: 'u5', name: 'Lena Brooks', email: 'lena@bravestonelabs.com', role: 'nurse_assistant', status: 'Invited', lastActive: 'Pending', branchId: 'main', phone: '+251 91 100 0005', defaultBranchId: 'main', emailSignature: 'Lena Brooks\nNurse / Assistant\nBright Smile Dental Clinic', preferences: defaultClinicUserPreferences },
   ],
+  // The six roles a clinic admin can assign. Retired roles are absent here but
+  // still honoured for accounts that already hold one.
   roles: [
-    { role: 'super_admin', access: 'All modules, organization, billing, reports, settings' },
-    { role: 'clinic_admin', access: 'Dashboard, patients, appointments, reports, organization' },
-    { role: 'dentist', access: 'Patients, dental charting, procedures, prescriptions' },
-    { role: 'receptionist', access: 'Patients, appointments, forms, reminders' },
-    { role: 'cashier', access: 'Billing, payments, invoices' },
-    { role: 'prescription_assistant', access: 'Patient prescriptions and care instructions' },
-    { role: 'accountant', access: 'Billing reports and payment history' },
-    { role: 'nurse_assistant', access: 'Symptoms, forms, appointments, care notes' },
+    { role: 'clinic_admin', access: 'Every section, staff and role administration, patient payments and clinic finances' },
+    { role: 'dentist', access: 'Patients, appointments, charting, prescriptions, sick leave, patient payments' },
+    { role: 'receptionist', access: 'Patients, appointments, doctors, sick leave, patient payments' },
+    { role: 'cashier', access: 'Patients and billing, including taking patient payments' },
+    { role: 'nurse_assistant', access: 'Patients, appointments, charting, sick leave' },
+    { role: 'accountant', access: 'Finance, billing and reports — amounts hidden until a clinic admin grants clinic finances' },
   ],
+  // Patient payments are on for the roles that take money at the chair or the
+  // front desk. Clinic finances — turnover, the expense ledger, per-doctor revenue
+  // — stay with the clinic admin until granted, which is what the accountant row
+  // is waiting for.
   rolePermissions: [
-    { role: 'super_admin', features: defaultFeaturesForRole('super_admin') },
     { role: 'clinic_admin', features: defaultFeaturesForRole('clinic_admin') },
     { role: 'dentist', features: defaultFeaturesForRole('dentist') },
     { role: 'receptionist', features: defaultFeaturesForRole('receptionist') },
     { role: 'cashier', features: defaultFeaturesForRole('cashier') },
-    { role: 'prescription_assistant', features: defaultFeaturesForRole('prescription_assistant') },
-    { role: 'accountant', features: defaultFeaturesForRole('accountant') },
     { role: 'nurse_assistant', features: defaultFeaturesForRole('nurse_assistant') },
+    { role: 'accountant', features: defaultFeaturesForRole('accountant') },
   ],
   branches: clinicBranches,
   organizationProfile: {

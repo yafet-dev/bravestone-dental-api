@@ -1,5 +1,13 @@
-import { Router, type Request } from 'express';
-import { resolveClinicOrganizationIdByAuthUserId } from '../auth/service';
+import { Router, type Request, type Response } from 'express';
+import { requireAuth } from '../auth/middleware';
+import { mergeClinicStateForAccess, scopeClinicStateForAccess } from './access';
+import { careHandoffsRouter } from './handoffs/router';
+import {
+  canOpenFeature,
+  resolveWorkspaceAccess,
+  type WorkspaceAccess,
+  type WorkspaceFeature,
+} from './permissions';
 import {
   generateClinicAssistantReply,
   generateClinicReportInsights,
@@ -9,6 +17,14 @@ import {
 import type { ClinicAssistantAttachment, ClinicWorkspaceState } from './types';
 
 export const clinicRouter = Router();
+
+// Every clinic route reads or writes patient data, so all of them need a signed
+// session before the handler runs.
+clinicRouter.use(requireAuth);
+
+// Care handoffs are the one live channel in the workspace, so they carry their
+// own small routes instead of riding the whole-workspace bootstrap payload.
+clinicRouter.use('/handoffs', careHandoffsRouter);
 
 const assistantAttachmentLimits = {
   maxCount: 4,
@@ -72,19 +88,16 @@ function parseAssistantAttachments(value: unknown): ClinicAssistantAttachment[] 
   return attachments;
 }
 
-async function resolveClinicRequestOrganizationId(request: Request) {
-  const authUserId = typeof request.headers['x-clinic-auth-user-id'] === 'string'
-    ? request.headers['x-clinic-auth-user-id'].trim()
-    : '';
+/**
+ * The workspace a request may touch comes from the signed-in account's own row,
+ * never from a request header. `X-Clinic-Organization-Id` is still honoured, but
+ * only as an assertion the server checks — it can never widen access.
+ */
+function resolveClinicRequestOrganizationId(request: Request) {
   const requestedOrganizationId = typeof request.headers['x-clinic-organization-id'] === 'string'
     ? request.headers['x-clinic-organization-id'].trim()
     : '';
-
-  if (!authUserId) {
-    return { error: 'Missing clinic session header.', organizationId: null as string | null, status: 401 };
-  }
-
-  const organizationId = await resolveClinicOrganizationIdByAuthUserId(authUserId);
+  const organizationId = request.actor?.organizationId || null;
 
   if (!organizationId) {
     return { error: 'Unable to resolve the clinic workspace for this session.', organizationId: null as string | null, status: 403 };
@@ -97,17 +110,74 @@ async function resolveClinicRequestOrganizationId(request: Request) {
   return { error: null, organizationId, status: 200 };
 }
 
-clinicRouter.get('/bootstrap', async (request, response, next) => {
-  try {
-    const context = await resolveClinicRequestOrganizationId(request);
+/**
+ * Resolves the caller's workspace together with what their role may do inside
+ * it. The role comes from the account row on `request.actor` — never from the
+ * workspace snapshot, whose `staffUsers` list the browser writes and a clinic
+ * admin can edit, and never from a request header.
+ */
+async function resolveClinicRequestContext(request: Request, response: Response) {
+  const context = resolveClinicRequestOrganizationId(request);
 
-    if (!context.organizationId) {
-      response.status(context.status).json({ message: context.error });
+  if (!context.organizationId) {
+    response.status(context.status).json({ message: context.error });
+    return null;
+  }
+
+  const state = await getClinicState(context.organizationId);
+  const access = resolveWorkspaceAccess({
+    role: request.actor?.role,
+    rolePermissions: state.rolePermissions,
+  });
+
+  return { access, actorId: request.actor?.id, organizationId: context.organizationId, state };
+}
+
+function denyFeature(response: Response, feature: WorkspaceFeature) {
+  response.status(403).json({
+    code: 'forbidden',
+    feature,
+    message: 'Your role does not have access to this part of the workspace. Ask a clinic admin to grant it.',
+  });
+}
+
+function requireFeature(access: WorkspaceAccess, feature: WorkspaceFeature, response: Response) {
+  if (!canOpenFeature(access, feature)) {
+    denyFeature(response, feature);
+    return false;
+  }
+
+  return true;
+}
+
+/**
+ * What the signed-in account may open. The browser mirrors this calculation to
+ * draw its sidebar; this endpoint is the authoritative answer, and it is what a
+ * client should trust when the two disagree.
+ */
+clinicRouter.get('/access', async (request, response, next) => {
+  try {
+    const context = await resolveClinicRequestContext(request, response);
+
+    if (!context) {
       return;
     }
 
-    const state = await getClinicState(context.organizationId);
-    response.json(state);
+    response.json({ access: context.access });
+  } catch (error) {
+    next(error);
+  }
+});
+
+clinicRouter.get('/bootstrap', async (request, response, next) => {
+  try {
+    const context = await resolveClinicRequestContext(request, response);
+
+    if (!context) {
+      return;
+    }
+
+    response.json(scopeClinicStateForAccess(context.state, context.access, context.actorId));
   } catch (error) {
     next(error);
   }
@@ -115,16 +185,26 @@ clinicRouter.get('/bootstrap', async (request, response, next) => {
 
 clinicRouter.put('/bootstrap', async (request, response, next) => {
   try {
-    const context = await resolveClinicRequestOrganizationId(request);
+    const context = await resolveClinicRequestContext(request, response);
 
-    if (!context.organizationId) {
-      response.status(context.status).json({ message: context.error });
+    if (!context) {
       return;
     }
 
-    const state = request.body as ClinicWorkspaceState;
-    const nextState = await replaceClinicState(state, context.organizationId);
-    response.json(nextState);
+    // The caller holds a redacted copy of the workspace, so their payload is
+    // treated as a set of proposed edits against the stored state rather than as
+    // a replacement for it. Anything they cannot read survives untouched, and
+    // anything they cannot manage — roles, grants, branches, other people's
+    // accounts — is taken from storage regardless of what they sent.
+    const nextState = mergeClinicStateForAccess({
+      access: context.access,
+      actorId: context.actorId,
+      current: context.state,
+      incoming: request.body as ClinicWorkspaceState,
+    });
+    const savedState = await replaceClinicState(nextState, context.organizationId);
+
+    response.json(scopeClinicStateForAccess(savedState, context.access, context.actorId));
   } catch (error) {
     next(error);
   }
@@ -132,10 +212,13 @@ clinicRouter.put('/bootstrap', async (request, response, next) => {
 
 clinicRouter.post('/assistant/reply', async (request, response, next) => {
   try {
-    const context = await resolveClinicRequestOrganizationId(request);
+    const context = await resolveClinicRequestContext(request, response);
 
-    if (!context.organizationId) {
-      response.status(context.status).json({ message: context.error });
+    if (!context) {
+      return;
+    }
+
+    if (!requireFeature(context.access, 'ai_assistant', response)) {
       return;
     }
 
@@ -153,11 +236,17 @@ clinicRouter.post('/assistant/reply', async (request, response, next) => {
       return;
     }
 
+    // The assistant answers from the workspace, so it has to answer from the
+    // caller's redacted view of it. Passing the caller's access here is what
+    // stops "what did we collect this month?" from becoming a way around the
+    // financial grant.
     const reply = await generateClinicAssistantReply(
       message || 'Please review the attached file(s).',
       context.organizationId,
       sessionId || undefined,
-      parsedAttachments.length ? parsedAttachments : undefined
+      parsedAttachments.length ? parsedAttachments : undefined,
+      context.access,
+      context.actorId
     );
     response.json(reply);
   } catch (error) {
@@ -167,10 +256,20 @@ clinicRouter.post('/assistant/reply', async (request, response, next) => {
 
 clinicRouter.post('/report-insights', async (request, response, next) => {
   try {
-    const context = await resolveClinicRequestOrganizationId(request);
+    const context = await resolveClinicRequestContext(request, response);
 
-    if (!context.organizationId) {
-      response.status(context.status).json({ message: context.error });
+    if (!context) {
+      return;
+    }
+
+    if (!requireFeature(context.access, 'reports', response)) {
+      return;
+    }
+
+    // Every insight card quotes revenue, collection, or outstanding balances, so
+    // the whole set follows the financial grant.
+    if (!context.access.canViewClinicFinances) {
+      denyFeature(response, 'reports');
       return;
     }
 

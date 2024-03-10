@@ -30,6 +30,14 @@ export const openApiDocument = {
       name: 'Clinic',
       description: 'Bootstrap endpoints for the clinic workspace.',
     },
+    {
+      name: 'Invitations',
+      description: 'Staff invitations, emailed through the configured SMTP relay.',
+    },
+    {
+      name: 'Users',
+      description: 'Account-owned resources such as profile pictures.',
+    },
   ],
   paths: {
     '/health': {
@@ -66,6 +74,7 @@ export const openApiDocument = {
         tags: ['Admin'],
         summary: 'Get super admin bootstrap data',
         operationId: 'getAdminBootstrap',
+        security: [{ bearerAuth: [] }],
         responses: {
           '200': {
             description: 'Current super admin state.',
@@ -93,6 +102,7 @@ export const openApiDocument = {
         tags: ['Admin'],
         summary: 'Replace super admin bootstrap data',
         operationId: 'putAdminBootstrap',
+        security: [{ bearerAuth: [] }],
         requestBody: {
           required: true,
           content: {
@@ -127,11 +137,507 @@ export const openApiDocument = {
         },
       },
     },
+    '/api/auth/register': {
+      post: {
+        tags: ['Auth'],
+        summary: 'Create an account and email a verification link',
+        description: 'The account is created even when the email cannot be delivered; check `verification.sent`.',
+        operationId: 'postAuthRegister',
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['email', 'password'],
+                properties: {
+                  email: { type: 'string', format: 'email' },
+                  fullName: { type: 'string' },
+                  password: { type: 'string', minLength: 8 },
+                },
+              },
+            },
+          },
+        },
+        responses: {
+          '201': {
+            description: 'Account created. `verification.sent` reports whether the email left the relay.',
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  properties: {
+                    user: { $ref: '#/components/schemas/PublicUser' },
+                    verification: {
+                      type: 'object',
+                      properties: {
+                        sent: { type: 'boolean' },
+                        error: { type: 'string' },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
+          '400': { $ref: '#/components/responses/AuthError' },
+          '409': { $ref: '#/components/responses/AuthError' },
+        },
+      },
+    },
+    '/api/auth/verify-email': {
+      post: {
+        tags: ['Auth'],
+        summary: 'Consume an emailed verification token and open a session',
+        operationId: 'postAuthVerifyEmail',
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['token'],
+                properties: { token: { type: 'string' } },
+              },
+            },
+          },
+        },
+        responses: {
+          '200': { $ref: '#/components/responses/SessionResponse' },
+          '400': { $ref: '#/components/responses/AuthError' },
+        },
+      },
+    },
+    '/api/auth/resend-verification': {
+      post: {
+        tags: ['Auth'],
+        summary: 'Email a fresh verification link',
+        description: 'Always succeeds so the response cannot be used to discover which addresses are registered.',
+        operationId: 'postAuthResendVerification',
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['email'],
+                properties: { email: { type: 'string', format: 'email' } },
+              },
+            },
+          },
+        },
+        responses: {
+          '200': {
+            description: 'Request accepted.',
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  properties: {
+                    sent: { type: 'boolean' },
+                    delivered: { type: 'boolean' },
+                    error: { type: 'string' },
+                  },
+                },
+              },
+            },
+          },
+          '400': { $ref: '#/components/responses/AuthError' },
+        },
+      },
+    },
+    '/api/auth/login': {
+      post: {
+        tags: ['Auth'],
+        summary: 'Exchange an email and password for a session token',
+        operationId: 'postAuthLogin',
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['email', 'password'],
+                properties: {
+                  email: { type: 'string', format: 'email' },
+                  password: { type: 'string' },
+                },
+              },
+            },
+          },
+        },
+        responses: {
+          '200': { $ref: '#/components/responses/SessionResponse' },
+          '401': { $ref: '#/components/responses/AuthError' },
+          '403': {
+            description: 'Unverified (`email_not_verified`), suspended, or password setup required.',
+            content: {
+              'application/json': {
+                schema: { $ref: '#/components/schemas/AuthErrorResponse' },
+              },
+            },
+          },
+        },
+      },
+    },
+    '/api/auth/forgot-password': {
+      post: {
+        tags: ['Auth'],
+        summary: 'Email a single-use password reset link',
+        operationId: 'postAuthForgotPassword',
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['email'],
+                properties: { email: { type: 'string', format: 'email' } },
+              },
+            },
+          },
+        },
+        responses: {
+          '200': {
+            description: 'Request accepted, whether or not the address is registered.',
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  properties: {
+                    sent: { type: 'boolean' },
+                    delivered: { type: 'boolean' },
+                    error: { type: 'string' },
+                  },
+                },
+              },
+            },
+          },
+          '400': { $ref: '#/components/responses/AuthError' },
+        },
+      },
+    },
+    '/api/auth/reset-password': {
+      post: {
+        tags: ['Auth'],
+        summary: 'Set a new password using an emailed reset token',
+        operationId: 'postAuthResetPassword',
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['password', 'token'],
+                properties: {
+                  password: { type: 'string', minLength: 8 },
+                  token: { type: 'string' },
+                },
+              },
+            },
+          },
+        },
+        responses: {
+          '200': { $ref: '#/components/responses/SessionResponse' },
+          '400': { $ref: '#/components/responses/AuthError' },
+        },
+      },
+    },
+    '/api/auth/me': {
+      get: {
+        tags: ['Auth'],
+        summary: 'Read the signed-in account',
+        operationId: 'getAuthMe',
+        security: [{ bearerAuth: [] }],
+        responses: {
+          '200': {
+            description: 'The signed-in account.',
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  properties: { user: { $ref: '#/components/schemas/PublicUser' } },
+                },
+              },
+            },
+          },
+          '401': { $ref: '#/components/responses/AuthError' },
+        },
+      },
+    },
+    '/api/auth/change-password': {
+      post: {
+        tags: ['Auth'],
+        summary: 'Change the signed-in account password',
+        operationId: 'postAuthChangePassword',
+        security: [{ bearerAuth: [] }],
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['currentPassword', 'newPassword'],
+                properties: {
+                  currentPassword: { type: 'string' },
+                  newPassword: { type: 'string', minLength: 8 },
+                },
+              },
+            },
+          },
+        },
+        responses: {
+          '200': { $ref: '#/components/responses/SessionResponse' },
+          '400': { $ref: '#/components/responses/AuthError' },
+          '401': { $ref: '#/components/responses/AuthError' },
+        },
+      },
+    },
+    '/api/invitations': {
+      get: {
+        tags: ['Invitations'],
+        summary: 'List invitations visible to the caller',
+        description: 'Clinic admins see their own clinic; super admins may pass `organizationId` to scope the list.',
+        operationId: 'getInvitations',
+        security: [{ bearerAuth: [] }],
+        parameters: [
+          {
+            name: 'organizationId',
+            in: 'query',
+            required: false,
+            schema: { type: 'string' },
+          },
+        ],
+        responses: {
+          '200': {
+            description: 'Invitations, newest first.',
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  properties: {
+                    invitations: {
+                      type: 'array',
+                      items: { $ref: '#/components/schemas/Invitation' },
+                    },
+                  },
+                },
+              },
+            },
+          },
+          '401': { $ref: '#/components/responses/AuthError' },
+        },
+      },
+      post: {
+        tags: ['Invitations'],
+        summary: 'Create an invitation and email it',
+        description: 'Answers 502 when the invitation was valid but the mail relay refused it; in that case nothing is persisted.',
+        operationId: 'postInvitation',
+        security: [{ bearerAuth: [] }],
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['email'],
+                properties: {
+                  branchId: { type: 'string' },
+                  email: { type: 'string', format: 'email' },
+                  fullName: { type: 'string' },
+                  organizationId: { type: 'string', description: 'Required for super admins.' },
+                  role: { type: 'string' },
+                },
+              },
+            },
+          },
+        },
+        responses: {
+          '201': { $ref: '#/components/responses/InvitationSendResult' },
+          '400': { $ref: '#/components/responses/AuthError' },
+          '401': { $ref: '#/components/responses/AuthError' },
+          '403': { $ref: '#/components/responses/AuthError' },
+          '409': { $ref: '#/components/responses/AuthError' },
+          '502': { $ref: '#/components/responses/InvitationSendResult' },
+        },
+      },
+    },
+    '/api/invitations/{invitationId}/resend': {
+      post: {
+        tags: ['Invitations'],
+        summary: 'Issue a fresh token and email the invitation again',
+        description: 'The previous link stops working. Answers 502 when the relay refuses the message.',
+        operationId: 'postInvitationResend',
+        security: [{ bearerAuth: [] }],
+        parameters: [
+          {
+            name: 'invitationId',
+            in: 'path',
+            required: true,
+            schema: { type: 'string' },
+          },
+        ],
+        responses: {
+          '200': { $ref: '#/components/responses/InvitationSendResult' },
+          '401': { $ref: '#/components/responses/AuthError' },
+          '403': { $ref: '#/components/responses/AuthError' },
+          '404': { $ref: '#/components/responses/AuthError' },
+          '409': { $ref: '#/components/responses/AuthError' },
+          '502': { $ref: '#/components/responses/InvitationSendResult' },
+        },
+      },
+    },
+    '/api/invitations/{invitationId}': {
+      delete: {
+        tags: ['Invitations'],
+        summary: 'Revoke a pending invitation',
+        operationId: 'deleteInvitation',
+        security: [{ bearerAuth: [] }],
+        parameters: [
+          {
+            name: 'invitationId',
+            in: 'path',
+            required: true,
+            schema: { type: 'string' },
+          },
+        ],
+        responses: {
+          '200': {
+            description: 'Invitation revoked.',
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  properties: { revoked: { type: 'boolean' } },
+                },
+              },
+            },
+          },
+          '401': { $ref: '#/components/responses/AuthError' },
+          '404': { $ref: '#/components/responses/AuthError' },
+          '409': { $ref: '#/components/responses/AuthError' },
+        },
+      },
+    },
+    '/api/invitations/token/{token}': {
+      get: {
+        tags: ['Invitations'],
+        summary: 'Preview an invitation from its emailed token',
+        description: 'Public: the invitee has no session yet.',
+        operationId: 'getInvitationByToken',
+        parameters: [
+          {
+            name: 'token',
+            in: 'path',
+            required: true,
+            schema: { type: 'string' },
+          },
+        ],
+        responses: {
+          '200': {
+            description: 'Invitation details for the accept screen.',
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  properties: {
+                    invitation: {
+                      type: 'object',
+                      properties: {
+                        branchName: { type: 'string' },
+                        email: { type: 'string', format: 'email' },
+                        expiresAt: { type: 'string', format: 'date-time' },
+                        fullName: { type: 'string' },
+                        organizationName: { type: 'string' },
+                        role: { type: 'string' },
+                        roleLabel: { type: 'string' },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
+          '404': { $ref: '#/components/responses/AuthError' },
+          '410': { $ref: '#/components/responses/AuthError' },
+        },
+      },
+    },
+    '/api/invitations/accept': {
+      post: {
+        tags: ['Invitations'],
+        summary: 'Accept an invitation, set a password, and open a session',
+        description: 'Public: consumes the emailed token, which cannot be replayed afterwards.',
+        operationId: 'postInvitationAccept',
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['password', 'token'],
+                properties: {
+                  fullName: { type: 'string' },
+                  password: { type: 'string', minLength: 8 },
+                  token: { type: 'string' },
+                },
+              },
+            },
+          },
+        },
+        responses: {
+          '200': { $ref: '#/components/responses/SessionResponse' },
+          '400': { $ref: '#/components/responses/AuthError' },
+          '404': { $ref: '#/components/responses/AuthError' },
+          '410': { $ref: '#/components/responses/AuthError' },
+        },
+      },
+    },
+    '/api/users/me/avatar': {
+      post: {
+        tags: ['Users'],
+        summary: 'Upload the signed-in account profile picture',
+        description: 'Accepts a base64 image data URL (PNG, JPG, WEBP, or GIF, up to 5 MB) and returns its public URL.',
+        operationId: 'postOwnAvatar',
+        security: [{ bearerAuth: [] }],
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['dataUrl'],
+                properties: {
+                  dataUrl: { type: 'string', example: 'data:image/png;base64,iVBORw0KGgo...' },
+                },
+              },
+            },
+          },
+        },
+        responses: {
+          '200': {
+            description: 'Stored image URL.',
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  properties: { avatarUrl: { type: 'string' } },
+                },
+              },
+            },
+          },
+          '400': { $ref: '#/components/responses/AuthError' },
+          '401': { $ref: '#/components/responses/AuthError' },
+          '413': { $ref: '#/components/responses/AuthError' },
+        },
+      },
+    },
     '/api/auth/session-user': {
       post: {
         tags: ['Auth'],
         summary: 'Sync the signed-in frontend user into the backend user store',
         operationId: 'postAuthSessionUser',
+        security: [{ bearerAuth: [] }],
         requestBody: {
           required: true,
           content: {
@@ -198,14 +704,58 @@ export const openApiDocument = {
         },
       },
     },
+    '/api/clinic/access': {
+      get: {
+        tags: ['Clinic'],
+        summary: "Get the signed-in account's effective workspace access",
+        description: 'Authoritative answer for which sidebar sections the caller may open and whether financial detail is visible to them. Clients mirror this calculation locally to draw navigation; where the two disagree, this response wins.',
+        operationId: 'getClinicAccess',
+        security: [{ bearerAuth: [] }],
+        responses: {
+          '200': {
+            description: 'Effective access for the caller.',
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  properties: {
+                    access: {
+                      type: 'object',
+                      properties: {
+                        canManageClinic: { type: 'boolean', description: 'May administer staff, branches, roles, and grants.' },
+                        canViewPatientPayments: { type: 'boolean', description: "May see one patient's balance, treatment price, invoices and payment history, and may record a payment." },
+                        canViewClinicFinances: { type: 'boolean', description: "May see the clinic's own money: income and expense ledger, revenue analytics, per-doctor revenue, and owner reports." },
+                        features: { type: 'array', items: { type: 'string' }, description: 'Sidebar sections this role may open.' },
+                        isPlatformAdmin: { type: 'boolean' },
+                        role: { type: 'string' },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
+          '403': {
+            description: 'No clinic workspace is attached to this session.',
+            content: {
+              'application/json': {
+                schema: { $ref: '#/components/schemas/ErrorResponse' },
+              },
+            },
+          },
+        },
+      },
+    },
     '/api/clinic/bootstrap': {
       get: {
         tags: ['Clinic'],
         summary: 'Get clinic workspace bootstrap data',
+        description: "Returns the workspace scoped to the caller's role. Sections their role cannot open come back empty, and financial figures — invoices, payments, the income/expense ledger, revenue analytics, patient balances, treatment prices, per-doctor revenue — are redacted unless a clinic admin has granted that role financial access.",
         operationId: 'getClinicBootstrap',
+        security: [{ bearerAuth: [] }],
         responses: {
           '200': {
-            description: 'Current clinic workspace state.',
+            description: 'Current clinic workspace state, scoped to the caller.',
             content: {
               'application/json': {
                 schema: {
@@ -228,8 +778,10 @@ export const openApiDocument = {
       },
       put: {
         tags: ['Clinic'],
-        summary: 'Replace clinic workspace bootstrap data',
+        summary: 'Save clinic workspace bootstrap data',
+        description: "Treated as proposed edits against the stored workspace, not a wholesale replacement. Slices the caller cannot read are preserved rather than overwritten, and slices only a clinic admin may manage — role grants, the role catalogue, branches, other people's staff records, the clinic's own details — are taken from storage whatever the request contains. A member may still update their own staff record, except its role, status, and email.",
         operationId: 'putClinicBootstrap',
+        security: [{ bearerAuth: [] }],
         requestBody: {
           required: true,
           content: {
@@ -269,6 +821,7 @@ export const openApiDocument = {
         tags: ['Clinic'],
         summary: 'Generate a clinic assistant reply',
         operationId: 'postClinicAssistantReply',
+        security: [{ bearerAuth: [] }],
         requestBody: {
           required: true,
           content: {
@@ -318,6 +871,7 @@ export const openApiDocument = {
         tags: ['Clinic'],
         summary: 'Generate clinic AI report insights',
         operationId: 'postClinicReportInsights',
+        security: [{ bearerAuth: [] }],
         responses: {
           '200': {
             description: 'AI report insights generated from clinic workspace data.',
@@ -344,6 +898,69 @@ export const openApiDocument = {
     },
   },
   components: {
+    securitySchemes: {
+      bearerAuth: {
+        type: 'http',
+        scheme: 'bearer',
+        bearerFormat: 'JWT',
+        description: 'Session token returned by the login, verify-email, reset-password, and invitation-accept endpoints.',
+      },
+    },
+    responses: {
+      AuthError: {
+        description: 'The request was rejected. `code` identifies the reason.',
+        content: {
+          'application/json': {
+            schema: {
+              $ref: '#/components/schemas/AuthErrorResponse',
+            },
+          },
+        },
+      },
+      SessionResponse: {
+        description: 'A session token and the account it belongs to.',
+        content: {
+          'application/json': {
+            schema: {
+              type: 'object',
+              properties: {
+                session: {
+                  type: 'object',
+                  properties: {
+                    expiresIn: { type: 'integer', description: 'Lifetime in seconds.' },
+                    token: { type: 'string' },
+                  },
+                },
+                user: { $ref: '#/components/schemas/PublicUser' },
+              },
+            },
+          },
+        },
+      },
+      InvitationSendResult: {
+        description: 'Outcome of an invitation send. `delivery.sent` is the authoritative result.',
+        content: {
+          'application/json': {
+            schema: {
+              type: 'object',
+              properties: {
+                delivery: {
+                  type: 'object',
+                  properties: {
+                    sent: { type: 'boolean' },
+                    error: { type: 'string', description: 'Present when the relay refused the message.' },
+                  },
+                },
+                invitation: {
+                  nullable: true,
+                  allOf: [{ $ref: '#/components/schemas/Invitation' }],
+                },
+              },
+            },
+          },
+        },
+      },
+    },
     schemas: {
       HealthResponse: {
         type: 'object',
@@ -365,6 +982,42 @@ export const openApiDocument = {
             type: 'string',
             format: 'date-time',
           },
+          mail: {
+            type: 'object',
+            description: 'SMTP relay configuration used for every outbound email.',
+            properties: {
+              configured: { type: 'boolean' },
+              host: { type: 'string', nullable: true },
+              port: { type: 'integer' },
+              from: { type: 'string', nullable: true },
+              issue: { type: 'string', nullable: true },
+            },
+          },
+        },
+      },
+      AuthErrorResponse: {
+        type: 'object',
+        required: ['code', 'message'],
+        properties: {
+          code: {
+            type: 'string',
+            example: 'email_not_verified',
+          },
+          message: { type: 'string' },
+        },
+      },
+      PublicUser: {
+        type: 'object',
+        properties: {
+          id: { type: 'string' },
+          email: { type: 'string', format: 'email' },
+          fullName: { type: 'string' },
+          role: { type: 'string' },
+          status: { type: 'string' },
+          organizationId: { type: 'string', nullable: true },
+          avatarUrl: { type: 'string', nullable: true },
+          emailVerified: { type: 'boolean' },
+          mustChangePassword: { type: 'boolean' },
         },
       },
       ErrorResponse: {
@@ -523,9 +1176,13 @@ export const openApiDocument = {
           id: { type: 'string' },
           organizationId: { type: 'string' },
           organizationName: { type: 'string' },
+          branchId: { type: 'string', nullable: true },
           branchName: { type: 'string' },
           email: { type: 'string', format: 'email' },
+          fullName: { type: 'string' },
           role: { type: 'string' },
+          roleLabel: { type: 'string' },
+          invitedByName: { type: 'string' },
           sentAt: { type: 'string' },
           expiresAt: { type: 'string' },
           status: { type: 'string', enum: ['sent', 'accepted', 'expired'] },

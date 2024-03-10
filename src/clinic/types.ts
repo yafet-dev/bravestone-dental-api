@@ -116,6 +116,27 @@ export type ClinicDoctorProfileNotification = {
   readAt?: string;
 };
 
+export type ClinicCareHandoffStatus = 'ready' | 'assigned' | 'acknowledged' | 'cancelled';
+
+export type ClinicCareHandoff = {
+  id: string;
+  branchId: string;
+  doctorId: string;
+  doctorName: string;
+  doctorSpecialty: string;
+  requestedByMemberId: string;
+  requestedAt: string;
+  status: ClinicCareHandoffStatus;
+  updatedAt: string;
+  patientId?: string;
+  patientName?: string;
+  appointmentId?: string;
+  assignedByMemberId?: string;
+  assignedByName?: string;
+  assignedAt?: string;
+  acknowledgedAt?: string;
+};
+
 export type ClinicPatient = {
   id: string;
   name: string;
@@ -193,7 +214,49 @@ export type ClinicDiagnosis = {
   doctorAction?: string;
   medicine?: string;
   followUp?: string;
-  attachments?: string[];
+  attachments?: ClinicRecordAttachment[];
+};
+
+export type ClinicRecordAttachment = {
+  id: string;
+  name: string;
+  type: string;
+  dataUrl: string;
+};
+
+export type ClinicDentalExamination = {
+  version: 1;
+  examiner: string;
+  temperature: string;
+  bloodPressure: string;
+  bloodGlucose: string;
+  chiefComplaint: string;
+  extraOralExam: string;
+  intraOralExam: string;
+  medicalHistory: {
+    diabetic: 'Unknown' | 'No' | 'Yes';
+    pregnancy: 'Unknown' | 'No' | 'Yes' | 'Not applicable';
+    cardiac: 'Unknown' | 'No' | 'Yes';
+    drugAllergy: 'Unknown' | 'No' | 'Yes';
+    gastrointestinalProblem: 'Unknown' | 'No' | 'Yes';
+    notes: string;
+  };
+  dentalHistory: {
+    missingTeeth: string;
+    mobileTeeth: string;
+    mobilityDegree: string;
+    cariesTeeth: string;
+    cariesClass: string;
+    fillingTeeth: string;
+    restorationMaterial: string;
+    rootCanalTreated: string;
+    prosthesis: string;
+  };
+  diagnosis: string;
+  treatmentPlan: string;
+  treatmentDone: string;
+  nextAppointment: string;
+  remarks: string;
 };
 
 export type ClinicSymptom = {
@@ -208,6 +271,7 @@ export type ClinicSymptom = {
   swelling: string;
   infection: string;
   notes: string;
+  examination?: ClinicDentalExamination;
 };
 
 export type ClinicPrescription = {

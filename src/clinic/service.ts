@@ -14,6 +14,9 @@ import {
   requestClinicReportInsightsAI,
 } from './ai';
 import { extractAttachmentContents } from './attachments';
+import { scopeClinicStateForAccess } from './access';
+import { calculatePatientAge } from './patientAge';
+import { defaultFeaturesForRole, normalizeFeatureList, type WorkspaceAccess } from './permissions';
 import { clinicSeedState } from './seed';
 import type {
   ClinicAIMemory,
@@ -25,6 +28,7 @@ import type {
   ClinicAssistantSession,
   ClinicDoctor,
   ClinicDoctorProfileNotification,
+  ClinicDentalExamination,
   ClinicFinanceEntry,
   ClinicForm,
   ClinicDiagnosis,
@@ -36,6 +40,7 @@ import type {
   ClinicPatientProfile,
   ClinicPrescription,
   ClinicProcedure,
+  ClinicRecordAttachment,
   ClinicReport,
   ClinicReportInsightsResult,
   ClinicRevenuePoint,
@@ -163,6 +168,155 @@ function normalizePatientPaymentPlan(
   return normalized;
 }
 
+function normalizeRecordAttachments(value: unknown): ClinicRecordAttachment[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value.flatMap((attachment, index) => {
+    if (typeof attachment === 'string') {
+      const isImageDataUrl = attachment.startsWith('data:image/');
+
+      return [{
+        id: `legacy-attachment-${index + 1}`,
+        name: isImageDataUrl ? `Record image ${index + 1}` : attachment,
+        type: isImageDataUrl ? attachment.slice(5, attachment.indexOf(';')) : 'application/octet-stream',
+        dataUrl: isImageDataUrl ? attachment : '',
+      }];
+    }
+
+    if (!attachment || typeof attachment !== 'object') {
+      return [];
+    }
+
+    const candidate = attachment as Partial<ClinicRecordAttachment>;
+    const dataUrl = typeof candidate.dataUrl === 'string' && candidate.dataUrl.startsWith('data:image/')
+      ? candidate.dataUrl
+      : '';
+
+    return [{
+      id: typeof candidate.id === 'string' && candidate.id.trim()
+        ? candidate.id
+        : `record-attachment-${index + 1}`,
+      name: typeof candidate.name === 'string' && candidate.name.trim()
+        ? candidate.name.trim()
+        : `Record image ${index + 1}`,
+      type: typeof candidate.type === 'string' && candidate.type.trim()
+        ? candidate.type.trim()
+        : dataUrl.slice(5, dataUrl.indexOf(';')) || 'application/octet-stream',
+      dataUrl,
+    }];
+  });
+}
+
+function toExaminationRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {};
+}
+
+function normalizeExaminationText(value: unknown) {
+  if (typeof value === 'string') {
+    return value;
+  }
+
+  return typeof value === 'number' && Number.isFinite(value) ? String(value) : '';
+}
+
+function normalizeYesNoUnknown(value: unknown): 'Unknown' | 'No' | 'Yes' {
+  if (typeof value !== 'string') {
+    return 'Unknown';
+  }
+
+  switch (value.trim().toLowerCase()) {
+    case 'yes':
+      return 'Yes';
+    case 'no':
+      return 'No';
+    default:
+      return 'Unknown';
+  }
+}
+
+function normalizePregnancyStatus(value: unknown): ClinicDentalExamination['medicalHistory']['pregnancy'] {
+  if (typeof value === 'string') {
+    const normalized = value.trim().toLowerCase();
+
+    if (normalized === 'yes') return 'Yes';
+    if (normalized === 'no') return 'No';
+    if (normalized === 'not applicable' || normalized === 'n/a') return 'Not applicable';
+  }
+
+  return 'Unknown';
+}
+
+function normalizeDentalExamination(value: unknown): ClinicDentalExamination | undefined {
+  const examination = toExaminationRecord(value);
+
+  if (examination.version !== 1 && examination.version !== '1') {
+    return undefined;
+  }
+
+  const medicalHistory = toExaminationRecord(examination.medicalHistory);
+  const dentalHistory = toExaminationRecord(examination.dentalHistory);
+
+  return {
+    version: 1,
+    examiner: normalizeExaminationText(examination.examiner),
+    temperature: normalizeExaminationText(examination.temperature),
+    bloodPressure: normalizeExaminationText(examination.bloodPressure),
+    bloodGlucose: normalizeExaminationText(examination.bloodGlucose),
+    chiefComplaint: normalizeExaminationText(examination.chiefComplaint),
+    extraOralExam: normalizeExaminationText(examination.extraOralExam),
+    intraOralExam: normalizeExaminationText(examination.intraOralExam),
+    medicalHistory: {
+      diabetic: normalizeYesNoUnknown(medicalHistory.diabetic),
+      pregnancy: normalizePregnancyStatus(medicalHistory.pregnancy),
+      cardiac: normalizeYesNoUnknown(medicalHistory.cardiac),
+      drugAllergy: normalizeYesNoUnknown(medicalHistory.drugAllergy),
+      gastrointestinalProblem: normalizeYesNoUnknown(medicalHistory.gastrointestinalProblem),
+      notes: normalizeExaminationText(medicalHistory.notes),
+    },
+    dentalHistory: {
+      missingTeeth: normalizeExaminationText(dentalHistory.missingTeeth),
+      mobileTeeth: normalizeExaminationText(dentalHistory.mobileTeeth),
+      mobilityDegree: normalizeExaminationText(dentalHistory.mobilityDegree),
+      cariesTeeth: normalizeExaminationText(dentalHistory.cariesTeeth),
+      cariesClass: normalizeExaminationText(dentalHistory.cariesClass),
+      fillingTeeth: normalizeExaminationText(dentalHistory.fillingTeeth),
+      restorationMaterial: normalizeExaminationText(dentalHistory.restorationMaterial),
+      rootCanalTreated: normalizeExaminationText(dentalHistory.rootCanalTreated),
+      prosthesis: normalizeExaminationText(dentalHistory.prosthesis),
+    },
+    diagnosis: normalizeExaminationText(examination.diagnosis),
+    treatmentPlan: normalizeExaminationText(examination.treatmentPlan),
+    treatmentDone: normalizeExaminationText(examination.treatmentDone),
+    nextAppointment: normalizeExaminationText(examination.nextAppointment),
+    remarks: normalizeExaminationText(examination.remarks),
+  };
+}
+
+/**
+ * Marks a payment row that is a balance carried forward rather than money anyone
+ * handed over. The prefix is the marker because it is already stable and already
+ * persisted, so no stored row has to be migrated to be recognised.
+ */
+const openingBalancePaymentIdPrefix = 'PAY-OPENING-';
+
+function reservePaymentId(usedIds: Set<string>, requestedId: string, patientId: string, index: number) {
+  const baseId = requestedId.trim() || `PAY-${patientId}-${index + 1}`;
+  let candidateId = baseId;
+  let suffix = 2;
+
+  while (usedIds.has(candidateId)) {
+    candidateId = `${baseId}-${suffix}`;
+    suffix += 1;
+  }
+
+  usedIds.add(candidateId);
+  return candidateId;
+}
+
 export function isSeedClinicStaffEmail(email: string) {
   return seededClinicStaffEmails.has(email.trim().toLowerCase());
 }
@@ -234,8 +388,8 @@ function buildEmptyClinicState({
       legalName: organizationName,
       contact: email,
       license: '',
-      assistantMessages: [],
-      doctorProfileNotifications: [],
+    assistantMessages: [],
+    doctorProfileNotifications: [],
     },
     financeEntries: [],
   };
@@ -412,6 +566,7 @@ type RelationalClinicOrganization = {
     swelling: string;
     infection: string;
     notes: string;
+    examination: Prisma.JsonValue | null;
   }>;
   clinicPrescriptions: Array<{
     id: string;
@@ -595,10 +750,20 @@ function toDoctorProfileNotifications(
     : fallback;
 }
 
+/**
+ * Reads a stored grant list into canonical permission keys.
+ *
+ * Older builds stored sidebar display labels ("Dental Charting", "AI Assistant")
+ * rather than keys, so normalizing on the way out migrates those rows in place
+ * without a schema change. Anything unrecognised is dropped: an unknown entry
+ * must never be treated as a grant.
+ */
 function toRoleFeatures(value: Prisma.JsonValue | null | undefined, fallback: string[] = []) {
-  return Array.isArray(value)
-    ? value.filter((feature): feature is string => typeof feature === 'string')
-    : fallback;
+  if (!Array.isArray(value)) {
+    return fallback;
+  }
+
+  return normalizeFeatureList(value);
 }
 
 function toUserPreferences(value: Prisma.JsonValue | null | undefined) {
@@ -640,21 +805,118 @@ function normalizeClinicState(state: ClinicWorkspaceState): ClinicWorkspaceState
     doctorProfileNotifications: defaultDoctorProfileNotifications,
   };
   const patientLastVisitById = new Map(state.patients.map((patient) => [patient.id, patient.lastVisit]));
+  const normalizedPatients = state.patients.map((patient) => ({
+    ...patient,
+    email: normalizePatientEmail(patient.email),
+    dentalChart: patient.dentalChart ?? [],
+    notes: patient.notes ?? [],
+    emergencyContacts: patient.emergencyContacts ?? [],
+  }));
+  const patientsById = new Map(normalizedPatients.map((patient) => [patient.id, patient]));
+  const usedPaymentIds = new Set<string>();
+  const normalizedPayments = state.patientPayments
+    .filter((payment) => Number.isFinite(payment.amount) && payment.amount > 0)
+    .map((payment, index) => ({
+      ...payment,
+      id: reservePaymentId(usedPaymentIds, payment.id, payment.patientId, index),
+    }));
+  const paymentsByPatientId = new Map<string, typeof normalizedPayments>();
+
+  normalizedPayments.forEach((payment) => {
+    const patientPayments = paymentsByPatientId.get(payment.patientId) || [];
+    patientPayments.push(payment);
+    paymentsByPatientId.set(payment.patientId, patientPayments);
+  });
+
+  const normalizedProfiles = state.patientProfiles.map((profile) => {
+    const paymentPlan = normalizePatientPaymentPlan(
+      profile.paymentPlan,
+      patientLastVisitById.get(profile.patientId)
+    );
+    const patient = patientsById.get(profile.patientId);
+    const patientPayments = paymentsByPatientId.get(profile.patientId) || [];
+    let transactionTotal = patientPayments.reduce((sum, payment) => sum + payment.amount, 0);
+
+    if (paymentPlan.paid > transactionTotal) {
+      const missingPaymentAmount = paymentPlan.paid - transactionTotal;
+      // A balance carried in from before this workspace held any transactions.
+      // Its method, receiver, and note are left EMPTY rather than filled with
+      // prose: nobody took this payment at a desk, so writing "Imported patient
+      // balance" into `receivedBy` made the payment table render "By Imported
+      // patient balance" as though that were a colleague. The row is recognised by
+      // its id prefix instead — mirrored in the frontend's `clinicData.tsx`.
+      const openingPayment = {
+        id: reservePaymentId(
+          usedPaymentIds,
+          `${openingBalancePaymentIdPrefix}${profile.patientId}`,
+          profile.patientId,
+          normalizedPayments.length
+        ),
+        patientId: profile.patientId,
+        date: paymentPlan.lastPaymentDate
+          || profile.registrationTime
+          || patient?.lastVisit
+          || '1970-01-01T00:00:00.000Z',
+        amount: missingPaymentAmount,
+        method: '',
+        receivedBy: '',
+        note: '',
+      };
+
+      normalizedPayments.push(openingPayment);
+      patientPayments.push(openingPayment);
+      paymentsByPatientId.set(profile.patientId, patientPayments);
+      transactionTotal += missingPaymentAmount;
+    }
+
+    const sortedPayments = [...patientPayments].sort((first, second) => (
+      new Date(first.date).getTime() - new Date(second.date).getTime()
+    ));
+    const latestPayment = sortedPayments.at(-1);
+    // Keep the agreed treatment price independent from payment transactions,
+    // including when the patient has overpaid.
+    const totalCost = paymentPlan.total;
+    const pendingAmount = Math.max(totalCost - transactionTotal, 0);
+
+    return {
+      ...profile,
+      address: normalizePatientAddress(profile.address),
+      pendingAmount,
+      paymentPlan: {
+        ...paymentPlan,
+        total: totalCost,
+        paid: transactionTotal,
+        // The first payment IS the earliest transaction, not a figure stored
+        // beside it. The profile's own `firstPayment` goes stale the moment
+        // payments are imported or corrected, so preferring it reported one
+        // number while `paid` and `pendingAmount` were derived from another —
+        // and the patient edit form, which writes to that earliest
+        // transaction, offered to overwrite a carried-forward balance with it.
+        firstPayment: sortedPayments.length ? sortedPayments[0].amount : paymentPlan.firstPayment,
+        lastPaymentDate: latestPayment?.date.slice(0, 10) || paymentPlan.lastPaymentDate,
+        method: latestPayment?.method || paymentPlan.method,
+      },
+    };
+  });
+  const profileByPatientId = new Map(normalizedProfiles.map((profile) => [profile.patientId, profile]));
 
   return {
     ...state,
-    patients: state.patients.map((patient) => ({
-      ...patient,
-      email: normalizePatientEmail(patient.email),
-      dentalChart: patient.dentalChart ?? [],
-      notes: patient.notes ?? [],
-      emergencyContacts: patient.emergencyContacts ?? [],
-    })),
-    patientProfiles: state.patientProfiles.map((profile) => ({
-      ...profile,
-      address: normalizePatientAddress(profile.address),
-      paymentPlan: normalizePatientPaymentPlan(profile.paymentPlan, patientLastVisitById.get(profile.patientId)),
-    })),
+    patients: normalizedPatients.map((patient) => {
+      const profile = profileByPatientId.get(patient.id);
+
+      return {
+        ...patient,
+        // Mirrors the frontend: the stored age is a snapshot of intake day and
+        // does not tick over on a birthday, so it is re-derived from the date of
+        // birth. See `calculatePatientAge` for why the registration calendar
+        // does not enter into it.
+        age: profile?.dob ? calculatePatientAge(profile.dob) : patient.age,
+        balance: profile?.pendingAmount ?? patient.balance,
+      };
+    }),
+    patientProfiles: normalizedProfiles,
+    patientPayments: normalizedPayments,
     appointments: state.appointments.map((appointment) => ({
       ...appointment,
       reason: appointment.reason || 'Patient visit',
@@ -673,8 +935,18 @@ function normalizeClinicState(state: ClinicWorkspaceState): ClinicWorkspaceState
       doctorAction: diagnosis.doctorAction ?? '',
       medicine: diagnosis.medicine ?? '',
       followUp: diagnosis.followUp ?? '',
-      attachments: diagnosis.attachments ?? [],
+      attachments: normalizeRecordAttachments(diagnosis.attachments),
     })),
+    symptoms: state.symptoms.map((symptom) => {
+      const examination = normalizeDentalExamination(symptom.examination);
+
+      if (!examination) {
+        const { examination: _invalidExamination, ...legacySymptom } = symptom;
+        return legacySymptom;
+      }
+
+      return { ...symptom, examination };
+    }),
     prescriptions: state.prescriptions.map((prescription) => ({
       ...prescription,
       instructions: prescription.instructions ?? '',
@@ -697,11 +969,18 @@ function normalizeClinicState(state: ClinicWorkspaceState): ClinicWorkspaceState
       };
     }),
     roles: state.roles,
+    // Grants are normalized to canonical keys, and a workspace with none yet gets
+    // the role defaults rather than an empty list. An empty list is a real answer
+    // meaning "no access", so synthesizing one here would lock every member out of
+    // a clinic that simply has not configured its roles.
     rolePermissions: state.rolePermissions.length
-      ? state.rolePermissions
+      ? state.rolePermissions.map((permission) => ({
+        role: permission.role,
+        features: normalizeFeatureList(permission.features),
+      }))
       : state.roles.map((role) => ({
         role: role.role,
-        features: [],
+        features: defaultFeaturesForRole(role.role),
       })),
     branches: state.branches,
     organizationProfile: Object.keys(state.organizationProfile || {}).length
@@ -1064,19 +1343,27 @@ function mapRelationalSymptoms(
     return fallbackSymptoms;
   }
 
-  return organization.clinicSymptoms.map((symptom) => ({
-    id: symptom.id,
-    patientId: symptom.patientId || undefined,
-    patient: symptom.patient,
-    date: symptom.date,
-    tooth: symptom.tooth,
-    pain: symptom.pain,
-    sensitivity: symptom.sensitivity,
-    bleeding: symptom.bleeding,
-    swelling: symptom.swelling,
-    infection: symptom.infection,
-    notes: symptom.notes,
-  }));
+  return organization.clinicSymptoms.map((symptom) => {
+    const fallbackSymptom = fallbackSymptoms.find((item) => item.id === symptom.id);
+    const examination = symptom.examination && typeof symptom.examination === 'object' && !Array.isArray(symptom.examination)
+      ? symptom.examination as unknown as ClinicDentalExamination
+      : fallbackSymptom?.examination;
+
+    return {
+      id: symptom.id,
+      patientId: symptom.patientId || undefined,
+      patient: symptom.patient,
+      date: symptom.date,
+      tooth: symptom.tooth,
+      pain: symptom.pain,
+      sensitivity: symptom.sensitivity,
+      bleeding: symptom.bleeding,
+      swelling: symptom.swelling,
+      infection: symptom.infection,
+      notes: symptom.notes,
+      ...(examination ? { examination } : {}),
+    };
+  });
 }
 
 function mapRelationalPrescriptions(
@@ -1588,7 +1875,7 @@ async function queryClinicState(organizationId: string): Promise<ClinicWorkspace
     return replaceClinicState(legacyState, organizationId);
   }
 
-  return mapRelationalClinicState(legacyState, record.organization);
+  return normalizeClinicState(mapRelationalClinicState(legacyState, record.organization));
 }
 
 export async function ensureClinicStateSeeded() {
@@ -1744,21 +2031,21 @@ export async function replaceClinicState(state: ClinicWorkspaceState, organizati
       where: { organizationId: targetOrganizationId },
     });
 
-    for (const point of nextState.revenueData) {
-      await transaction.clinicRevenuePoint.create({
-        data: {
+    if (nextState.revenueData.length > 0) {
+      await transaction.clinicRevenuePoint.createMany({
+        data: nextState.revenueData.map((point, sortOrder) => ({
           organizationId: targetOrganizationId,
           name: point.name,
           revenue: point.revenue,
           patients: point.patients,
-          sortOrder: nextState.revenueData.indexOf(point),
-        },
+          sortOrder,
+        })),
       });
     }
 
-    for (const procedure of nextState.procedures) {
-      await transaction.clinicProcedure.create({
-        data: {
+    if (nextState.procedures.length > 0) {
+      await transaction.clinicProcedure.createMany({
+        data: nextState.procedures.map((procedure) => ({
           id: procedure.id,
           organizationId: targetOrganizationId,
           name: procedure.name,
@@ -1768,13 +2055,13 @@ export async function replaceClinicState(state: ClinicWorkspaceState, organizati
           followUp: procedure.followUp,
           patient: procedure.patient,
           doctor: procedure.doctor,
-        },
+        })),
       });
     }
 
-    for (const doctor of nextState.doctors) {
-      await transaction.clinicDoctor.create({
-        data: {
+    if (nextState.doctors.length > 0) {
+      await transaction.clinicDoctor.createMany({
+        data: nextState.doctors.map((doctor) => ({
           id: doctor.id,
           organizationId: targetOrganizationId,
           name: doctor.name,
@@ -1786,13 +2073,13 @@ export async function replaceClinicState(state: ClinicWorkspaceState, organizati
           procedures: doctor.procedures,
           rating: doctor.rating,
           weeklyAvailability: toJsonValue(doctor.weeklyAvailability || []),
-        },
+        })),
       });
     }
 
-    for (const patient of nextState.patients) {
-      await transaction.clinicPatient.create({
-        data: {
+    if (nextState.patients.length > 0) {
+      await transaction.clinicPatient.createMany({
+        data: nextState.patients.map((patient) => ({
           id: patient.id,
           organizationId: targetOrganizationId,
           name: patient.name,
@@ -1807,13 +2094,13 @@ export async function replaceClinicState(state: ClinicWorkspaceState, organizati
           dentalChart: toJsonValue(patient.dentalChart || []),
           notes: toJsonValue(patient.notes || []),
           emergencyContacts: toJsonValue(patient.emergencyContacts || []),
-        },
+        })),
       });
     }
 
-    for (const profile of nextState.patientProfiles) {
-      await transaction.clinicPatientProfile.create({
-        data: {
+    if (nextState.patientProfiles.length > 0) {
+      await transaction.clinicPatientProfile.createMany({
+        data: nextState.patientProfiles.map((profile) => ({
           patientId: profile.patientId,
           organizationId: targetOrganizationId,
           directoryId: profile.directoryId,
@@ -1828,13 +2115,13 @@ export async function replaceClinicState(state: ClinicWorkspaceState, organizati
           recordCount: profile.recordCount,
           cardNumber: profile.cardNumber,
           registrationTime: profile.registrationTime,
-        },
+        })),
       });
     }
 
-    for (const payment of nextState.patientPayments) {
-      await transaction.clinicPatientPayment.create({
-        data: {
+    if (nextState.patientPayments.length > 0) {
+      await transaction.clinicPatientPayment.createMany({
+        data: nextState.patientPayments.map((payment) => ({
           id: payment.id,
           organizationId: targetOrganizationId,
           patientId: payment.patientId,
@@ -1843,13 +2130,13 @@ export async function replaceClinicState(state: ClinicWorkspaceState, organizati
           method: payment.method,
           receivedBy: payment.receivedBy,
           note: payment.note,
-        },
+        })),
       });
     }
 
-    for (const appointment of nextState.appointments) {
-      await transaction.clinicAppointment.create({
-        data: {
+    if (nextState.appointments.length > 0) {
+      await transaction.clinicAppointment.createMany({
+        data: nextState.appointments.map((appointment) => ({
           id: appointment.id,
           organizationId: targetOrganizationId,
           patientId: appointment.patientId,
@@ -1863,13 +2150,13 @@ export async function replaceClinicState(state: ClinicWorkspaceState, organizati
           status: appointment.status,
           reason: appointment.reason || null,
           createdNow: appointment.createdNow ?? false,
-        },
+        })),
       });
     }
 
-    for (const diagnosis of nextState.diagnoses) {
-      await transaction.clinicDiagnosis.create({
-        data: {
+    if (nextState.diagnoses.length > 0) {
+      await transaction.clinicDiagnosis.createMany({
+        data: nextState.diagnoses.map((diagnosis) => ({
           id: diagnosis.id,
           organizationId: targetOrganizationId,
           patientId: diagnosis.patientId || null,
@@ -1885,13 +2172,13 @@ export async function replaceClinicState(state: ClinicWorkspaceState, organizati
           medicine: diagnosis.medicine || null,
           followUp: diagnosis.followUp || null,
           attachments: toJsonValue(diagnosis.attachments || []),
-        },
+        })),
       });
     }
 
-    for (const symptom of nextState.symptoms) {
-      await transaction.clinicSymptom.create({
-        data: {
+    if (nextState.symptoms.length > 0) {
+      await transaction.clinicSymptom.createMany({
+        data: nextState.symptoms.map((symptom) => ({
           id: symptom.id,
           organizationId: targetOrganizationId,
           patientId: symptom.patientId || null,
@@ -1904,13 +2191,14 @@ export async function replaceClinicState(state: ClinicWorkspaceState, organizati
           swelling: symptom.swelling,
           infection: symptom.infection,
           notes: symptom.notes,
-        },
+          examination: symptom.examination ? toJsonValue(symptom.examination) : undefined,
+        })),
       });
     }
 
-    for (const prescription of nextState.prescriptions) {
-      await transaction.clinicPrescription.create({
-        data: {
+    if (nextState.prescriptions.length > 0) {
+      await transaction.clinicPrescription.createMany({
+        data: nextState.prescriptions.map((prescription) => ({
           id: prescription.id,
           organizationId: targetOrganizationId,
           patientId: prescription.patientId || null,
@@ -1923,13 +2211,13 @@ export async function replaceClinicState(state: ClinicWorkspaceState, organizati
           status: prescription.status,
           date: prescription.date,
           instructions: prescription.instructions || null,
-        },
+        })),
       });
     }
 
-    for (const invoice of nextState.invoices) {
-      await transaction.clinicInvoice.create({
-        data: {
+    if (nextState.invoices.length > 0) {
+      await transaction.clinicInvoice.createMany({
+        data: nextState.invoices.map((invoice) => ({
           id: invoice.id,
           organizationId: targetOrganizationId,
           patientId: invoice.patientId || null,
@@ -1938,13 +2226,13 @@ export async function replaceClinicState(state: ClinicWorkspaceState, organizati
           amount: invoice.amount,
           status: invoice.status,
           items: toJsonValue(invoice.items || []),
-        },
+        })),
       });
     }
 
-    for (const form of nextState.forms) {
-      await transaction.clinicForm.create({
-        data: {
+    if (nextState.forms.length > 0) {
+      await transaction.clinicForm.createMany({
+        data: nextState.forms.map((form) => ({
           id: form.id,
           organizationId: targetOrganizationId,
           patientId: form.patientId || null,
@@ -1953,13 +2241,13 @@ export async function replaceClinicState(state: ClinicWorkspaceState, organizati
           status: form.status,
           owner: form.owner,
           updated: form.updated,
-        },
+        })),
       });
     }
 
-    for (const leave of nextState.sickLeaves) {
-      await transaction.clinicSickLeave.create({
-        data: {
+    if (nextState.sickLeaves.length > 0) {
+      await transaction.clinicSickLeave.createMany({
+        data: nextState.sickLeaves.map((leave) => ({
           id: leave.id,
           organizationId: targetOrganizationId,
           patientId: leave.patientId || null,
@@ -1970,26 +2258,26 @@ export async function replaceClinicState(state: ClinicWorkspaceState, organizati
           start: leave.start,
           end: leave.end,
           status: leave.status,
-        },
+        })),
       });
     }
 
-    for (const report of nextState.reports) {
-      await transaction.clinicReport.create({
-        data: {
+    if (nextState.reports.length > 0) {
+      await transaction.clinicReport.createMany({
+        data: nextState.reports.map((report) => ({
           id: report.id,
           organizationId: targetOrganizationId,
           name: report.name,
           type: report.type,
           range: report.range,
           format: report.format,
-        },
+        })),
       });
     }
 
-    for (const entry of nextState.financeEntries) {
-      await transaction.clinicFinanceEntry.create({
-        data: {
+    if (nextState.financeEntries.length > 0) {
+      await transaction.clinicFinanceEntry.createMany({
+        data: nextState.financeEntries.map((entry) => ({
           id: entry.id,
           organizationId: targetOrganizationId,
           type: entry.type,
@@ -2001,7 +2289,7 @@ export async function replaceClinicState(state: ClinicWorkspaceState, organizati
           amount: entry.amount,
           status: entry.status,
           frequency: entry.frequency,
-        },
+        })),
       });
     }
 
@@ -2239,9 +2527,17 @@ export async function generateClinicAssistantReply(
   message: string,
   organizationId = clinicOrganizationId,
   sessionId?: string,
-  attachments?: ClinicAssistantAttachment[]
+  attachments?: ClinicAssistantAttachment[],
+  access?: WorkspaceAccess,
+  actorId?: string
 ): Promise<ClinicAssistantReplyResult> {
-  const state = await getClinicState(organizationId);
+  const storedState = await getClinicState(organizationId);
+  // The assistant reasons over the workspace, so it must reason over the
+  // caller's redacted copy of it. Without this, a role with no financial grant
+  // could simply ask the assistant for the revenue it is not allowed to see.
+  const state = access
+    ? scopeClinicStateForAccess(storedState, access, actorId)
+    : storedState;
   const sessions = state.organizationProfile.assistantSessions || [];
   const activeSession = sessionId
     ? sessions.find((session) => session.id === sessionId)
@@ -2285,6 +2581,7 @@ export async function generateClinicAssistantReply(
     state,
     state.organizationProfile.aiMemory
   );
+  const canWriteAssistantMemory = !access || access.canViewClinicFinances;
 
   // Prefer the short AI-generated topic label over the truncated user prompt.
   const aiSessionTitle = aiResult?.sessionTitle?.trim() || '';
@@ -2353,7 +2650,10 @@ export async function generateClinicAssistantReply(
 
     return {
       ...profile,
-      aiMemory: memory,
+      // The memory is a narrative summary that quotes revenue and outstanding
+      // balances. A caller without the financial grant reasoned over redacted
+      // figures, so their summary must not overwrite the real one.
+      ...(canWriteAssistantMemory ? { aiMemory: memory } : {}),
       ...profileUpdate,
     };
   };
@@ -2362,10 +2662,11 @@ export async function generateClinicAssistantReply(
 
   if (!updated) {
     // No workspace row yet (first-ever interaction) — fall back to seeding the
-    // full state.
+    // full state. This seeds from the STORED state, never the caller's redacted
+    // view of it, which would otherwise persist the redaction as real data.
     await replaceClinicState({
-      ...state,
-      organizationProfile: applyReplyToProfile(state.organizationProfile),
+      ...storedState,
+      organizationProfile: applyReplyToProfile(storedState.organizationProfile),
     }, organizationId);
   }
 
