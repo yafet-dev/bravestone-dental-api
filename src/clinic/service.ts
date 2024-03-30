@@ -1,6 +1,8 @@
 import { Prisma } from '@prisma/client';
 import { ensureAdminStateSeeded } from '../admin/service';
+import { AuthError } from '../auth/errors';
 import { prisma } from '../db';
+import { collectedPayments, openingBalancePaymentIdPrefix } from './payments';
 import {
   buildClinicFallbackAssistantContent,
   buildClinicFallbackMemory,
@@ -13,12 +15,19 @@ import {
   requestClinicAssistantAI,
   requestClinicReportInsightsAI,
 } from './ai';
+import {
+  buildAiBudgetExhaustedReply,
+  loadAiBudget,
+  recordAiSpend,
+  type AiBudgetState,
+} from './aiBudget';
 import { extractAttachmentContents } from './attachments';
 import { scopeClinicStateForAccess } from './access';
 import { calculatePatientAge } from './patientAge';
 import { defaultFeaturesForRole, normalizeFeatureList, type WorkspaceAccess } from './permissions';
 import { clinicSeedState } from './seed';
 import type {
+  ClinicAiBudgetSummary,
   ClinicAIMemory,
   ClinicAppointment,
   ClinicAssistantAttachment,
@@ -70,7 +79,6 @@ const defaultPreferences: ClinicUserPreferences = {
   billingAlerts: true,
   recordReviewAlerts: false,
   weeklySummary: true,
-  twoFactor: true,
   compactMode: false,
   defaultLandingPage: 'Dashboard overview',
   calendarView: 'Week view',
@@ -79,7 +87,7 @@ const defaultPreferences: ClinicUserPreferences = {
 };
 
 function defaultOrganizationStatusForScope(organizationId: string) {
-  return organizationId === clinicOrganizationId ? 'active' : 'trial';
+  return organizationId === clinicOrganizationId ? 'active' : 'onboarding';
 }
 
 type ClinicWorkspaceScope = {
@@ -193,6 +201,9 @@ function normalizeRecordAttachments(value: unknown): ClinicRecordAttachment[] {
     const dataUrl = typeof candidate.dataUrl === 'string' && candidate.dataUrl.startsWith('data:image/')
       ? candidate.dataUrl
       : '';
+    const attachmentId = typeof candidate.attachmentId === 'string' && candidate.attachmentId.trim()
+      ? candidate.attachmentId.trim()
+      : undefined;
 
     return [{
       id: typeof candidate.id === 'string' && candidate.id.trim()
@@ -205,6 +216,10 @@ function normalizeRecordAttachments(value: unknown): ClinicRecordAttachment[] {
         ? candidate.type.trim()
         : dataUrl.slice(5, dataUrl.indexOf(';')) || 'application/octet-stream',
       dataUrl,
+      ...(attachmentId ? { attachmentId } : {}),
+      ...(typeof candidate.isRadiograph === 'boolean'
+        ? { isRadiograph: candidate.isRadiograph }
+        : {}),
     }];
   });
 }
@@ -296,12 +311,6 @@ function normalizeDentalExamination(value: unknown): ClinicDentalExamination | u
   };
 }
 
-/**
- * Marks a payment row that is a balance carried forward rather than money anyone
- * handed over. The prefix is the marker because it is already stable and already
- * persisted, so no stored row has to be migrated to be recognised.
- */
-const openingBalancePaymentIdPrefix = 'PAY-OPENING-';
 
 function reservePaymentId(usedIds: Set<string>, requestedId: string, patientId: string, index: number) {
   const baseId = requestedId.trim() || `PAY-${patientId}-${index + 1}`;
@@ -628,6 +637,10 @@ type RelationalClinicOrganization = {
     amount: number;
     status: string;
     frequency: string;
+    seriesId: string | null;
+    recurrence: string | null;
+    generatedThrough: string | null;
+    autoAdded: boolean;
   }>;
 };
 
@@ -1016,7 +1029,8 @@ function getLocalDateKey(date = new Date()) {
 }
 
 function getCollectedRevenue(state: ClinicWorkspaceState) {
-  const patientPaymentRevenue = state.patientPayments.reduce((sum, payment) => sum + payment.amount, 0);
+  const patientPaymentRevenue = collectedPayments(state.patientPayments)
+    .reduce((sum, payment) => sum + payment.amount, 0);
   const receivedFinanceRevenue = state.financeEntries.reduce((sum, entry) => {
     if (entry.type !== 'income' || entry.status !== 'Received') {
       return sum;
@@ -1484,6 +1498,12 @@ function mapRelationalFinanceEntries(
     amount: Number(entry.amount),
     status: entry.status as ClinicFinanceEntry['status'],
     frequency: entry.frequency as ClinicFinanceEntry['frequency'],
+    // Recurrence metadata has to survive the round trip: the client's monthly
+    // roll-forward reads the watermark to decide what it has already booked.
+    seriesId: entry.seriesId ?? undefined,
+    recurrence: (entry.recurrence as ClinicFinanceEntry['recurrence']) ?? undefined,
+    generatedThrough: entry.generatedThrough ?? undefined,
+    autoAdded: entry.autoAdded ?? false,
   }));
 }
 
@@ -1897,7 +1917,11 @@ export async function getClinicState(organizationId = clinicOrganizationId) {
   return queryClinicState(organizationId);
 }
 
-export async function replaceClinicState(state: ClinicWorkspaceState, organizationId = clinicOrganizationId) {
+export async function replaceClinicState(
+  state: ClinicWorkspaceState,
+  organizationId = clinicOrganizationId,
+  options?: { expectedOrganizationStatus?: 'onboarding' },
+) {
   const nextState = normalizeClinicState(state);
   await ensureAdminStateSeeded();
   const defaultPlan = await prisma.plan.findFirst({
@@ -1916,8 +1940,74 @@ export async function replaceClinicState(state: ClinicWorkspaceState, organizati
   const dueDate = new Date();
   dueDate.setDate(dueDate.getDate() + 30);
   const { organizationId: targetOrganizationId, workspaceId } = getClinicWorkspaceScope(organizationId);
+  const normalizedOrganizationName = nextState.organizationProfile.name.trim().toLowerCase();
+  const hasDefaultPersonalOrganizationName = (
+    normalizedOrganizationName === `${owner.trim().toLowerCase()}'s clinic`
+  );
+  const hasDefaultBranch = (
+    nextState.branches.length === 1
+    && nextState.branches[0]?.name.trim().toLowerCase() === 'main branch'
+    && !nextState.branches[0]?.city.trim()
+    && (
+      !nextState.branches[0]?.manager.trim()
+      || nextState.branches[0]?.manager.trim().toLowerCase() === owner.trim().toLowerCase()
+    )
+  );
+  const applicationReadyForReview = (
+    targetOrganizationId !== clinicOrganizationId
+    && normalizedOrganizationName.length >= 2
+    && normalizedOrganizationName !== 'your clinic'
+    && !hasDefaultPersonalOrganizationName
+    && !hasDefaultBranch
+    && nextState.branches.length > 0
+    && nextState.branches.every((branch) => branch.name.trim().length > 0)
+  );
+
+  if (options?.expectedOrganizationStatus === 'onboarding' && !applicationReadyForReview) {
+    throw new AuthError(
+      400,
+      'invalid_onboarding_application',
+      'Complete the clinic and branch setup before submitting the application.',
+    );
+  }
 
   await prisma.$transaction(async (transaction) => {
+    let existingOrganization: { status: string } | null;
+
+    if (options?.expectedOrganizationStatus === 'onboarding') {
+      // Claim the submission by atomically advancing onboarding -> trial before
+      // any profile/branch writes. A second in-flight PUT, or one that lost a
+      // race with an admin decision, changes zero rows and cannot overwrite the
+      // already-submitted application.
+      const claimed = await transaction.organization.updateMany({
+        where: {
+          id: targetOrganizationId,
+          status: 'onboarding',
+        },
+        data: { status: 'trial' },
+      });
+
+      if (claimed.count !== 1) {
+        throw new AuthError(
+          409,
+          'organization_status_changed',
+          'This clinic application has already been submitted.',
+        );
+      }
+
+      existingOrganization = { status: 'onboarding' };
+    } else {
+      existingOrganization = await transaction.organization.findUnique({
+        where: { id: targetOrganizationId },
+        select: { status: true },
+      });
+    }
+    const shouldSubmitForApproval = (
+      existingOrganization?.status === 'onboarding'
+      && applicationReadyForReview
+    );
+    const defaultStatus = defaultOrganizationStatusForScope(targetOrganizationId);
+
     await transaction.organization.upsert({
       where: { id: targetOrganizationId },
       update: {
@@ -1936,6 +2026,7 @@ export async function replaceClinicState(state: ClinicWorkspaceState, organizati
         dashboardAppointmentsToday: dashboardMetrics.appointmentsToday,
         dashboardMonthlyRevenue: dashboardMetrics.monthlyRevenue,
         dashboardPendingForms: dashboardMetrics.pendingForms,
+        ...(shouldSubmitForApproval ? { status: 'trial' } : {}),
       },
       create: {
         id: targetOrganizationId,
@@ -1952,8 +2043,13 @@ export async function replaceClinicState(state: ClinicWorkspaceState, organizati
           ? toJsonValue(nextState.organizationProfile.doctorProfileNotifications)
           : Prisma.DbNull,
         planId: defaultPlan.id,
-        status: defaultOrganizationStatusForScope(targetOrganizationId),
-        paymentStatus: 'paid',
+        status: defaultStatus === 'onboarding' && applicationReadyForReview
+          ? 'trial'
+          : defaultStatus,
+        // The legacy seed workspace is already provisioned. A self-registered
+        // clinic, however, has no payment record yet; approval and billing are
+        // deliberately separate platform decisions.
+        paymentStatus: targetOrganizationId === clinicOrganizationId ? 'paid' : 'unpaid',
         dueDate,
         aiResetDate: dueDate,
         dashboardAppointmentsToday: dashboardMetrics.appointmentsToday,
@@ -2289,6 +2385,10 @@ export async function replaceClinicState(state: ClinicWorkspaceState, organizati
           amount: entry.amount,
           status: entry.status,
           frequency: entry.frequency,
+          seriesId: entry.seriesId ?? null,
+          recurrence: entry.recurrence ?? null,
+          generatedThrough: entry.generatedThrough ?? null,
+          autoAdded: entry.autoAdded ?? false,
         })),
       });
     }
@@ -2546,18 +2646,36 @@ export async function generateClinicAssistantReply(
   // attachments never reach the LLM at all.
   const isCourtesy = !attachments?.length && isConversationalCourtesy(message);
   const skipAI = !attachments?.length && !isCourtesy && !isClinicScopedMessage(state, message);
+  const wouldCallModel = !skipAI && !isCourtesy;
+
+  // The weekly allowance is checked before any billable work: OCR on an
+  // attachment is expensive on its own, so an exhausted clinic must be stopped
+  // ahead of extraction, not just ahead of the model call. Greetings and
+  // off-topic refusals never reach the provider, so they stay free.
+  let budget = wouldCallModel ? await loadAiBudget(organizationId) : null;
+
+  if (budget?.exhausted) {
+    return buildAiBudgetRefusal(organizationId, message, sessionId, attachments, budget);
+  }
+
   const enrichedAttachments = attachments?.length && !skipAI
     ? await extractAttachmentContents(attachments)
     : attachments;
-  const aiResult = skipAI || isCourtesy
-    ? null
-    : await requestClinicAssistantAI(
+  const aiResult = wouldCallModel
+    ? await requestClinicAssistantAI(
         state,
         message,
         state.organizationProfile.aiMemory,
         activeSession?.messages,
         enrichedAttachments
-      );
+      )
+    : null;
+
+  // Charge what the provider actually reported. A failed call that still burned
+  // tokens is charged too; a call that returned no usage figures is not.
+  if (aiResult?.usage && (aiResult.usage.inputTokens > 0 || aiResult.usage.outputTokens > 0)) {
+    budget = await recordAiSpend(organizationId, aiResult.usage);
+  }
   const replyTimestamp = new Date().toISOString();
   const trimmedMessage = message.trim();
   const replyMessage: ClinicAssistantMessage = {
@@ -2676,6 +2794,109 @@ export async function generateClinicAssistantReply(
     ...(aiSessionTitle ? { sessionTitle: aiSessionTitle } : {}),
     model: aiResult?.model,
     source: aiResult?.source || 'fallback',
+    ...(budget ? { budget: toClinicAiBudgetSummary(budget) } : {}),
+  };
+}
+
+/** Trims the internal budget state down to what the clinic UI needs. */
+function toClinicAiBudgetSummary(budget: AiBudgetState): ClinicAiBudgetSummary {
+  return {
+    budgetUsd: budget.budgetUsd,
+    spentUsd: budget.spentUsd,
+    remainingUsd: budget.remainingUsd,
+    usedPercent: budget.usedPercent,
+    inputTokens: budget.inputTokens,
+    outputTokens: budget.outputTokens,
+    remainingTokensEstimate: budget.remainingTokensEstimate,
+    resetAt: budget.resetAt,
+    resetInSeconds: budget.resetInSeconds,
+    exhausted: budget.exhausted,
+  };
+}
+
+/**
+ * The reply a clinic gets once its weekly allowance is spent.
+ *
+ * The exchange is still written into the conversation so the operator can see
+ * why the assistant stopped answering, but no provider call is made and the AI
+ * memory is left untouched — a refusal is not a clinical insight worth
+ * remembering.
+ */
+async function buildAiBudgetRefusal(
+  organizationId: string,
+  message: string,
+  sessionId: string | undefined,
+  attachments: ClinicAssistantAttachment[] | undefined,
+  budget: AiBudgetState,
+): Promise<ClinicAssistantReplyResult> {
+  const storedState = await getClinicState(organizationId);
+  const timestamp = new Date().toISOString();
+  const trimmedMessage = message.trim();
+  const replyMessage: ClinicAssistantMessage = {
+    id: `assistant-${Date.now()}`,
+    role: 'assistant',
+    content: buildAiBudgetExhaustedReply(budget),
+    timestamp,
+  };
+  const userMessage: ClinicAssistantMessage = {
+    id: `user-${Date.now()}`,
+    role: 'user',
+    content: trimmedMessage,
+    timestamp,
+    ...(attachments?.length ? { attachments } : {}),
+  };
+
+  const appendRefusal = (profile: ClinicOrganizationProfile): ClinicOrganizationProfile => {
+    if (sessionId) {
+      const freshSessions = profile.assistantSessions || [];
+      const existing = freshSessions.find((session) => session.id === sessionId);
+
+      return {
+        ...profile,
+        assistantSessions: existing
+          ? freshSessions.map((session) => (
+              session.id === sessionId
+                ? {
+                    ...session,
+                    updatedAt: timestamp,
+                    messages: [...session.messages, userMessage, replyMessage],
+                  }
+                : session
+            ))
+          : [
+              ...freshSessions,
+              {
+                id: sessionId,
+                title: buildAssistantSessionTitle(trimmedMessage),
+                createdAt: timestamp,
+                updatedAt: timestamp,
+                messages: [userMessage, replyMessage],
+              },
+            ],
+      };
+    }
+
+    return {
+      ...profile,
+      assistantMessages: [...(profile.assistantMessages || []), userMessage, replyMessage],
+    };
+  };
+
+  const updated = await updateClinicOrganizationProfileColumn(organizationId, appendRefusal);
+
+  if (!updated) {
+    await replaceClinicState({
+      ...storedState,
+      organizationProfile: appendRefusal(storedState.organizationProfile),
+    }, organizationId);
+  }
+
+  return {
+    memory: storedState.organizationProfile.aiMemory
+      || buildClinicFallbackMemory(storedState, storedState.organizationProfile.aiMemory),
+    message: replyMessage,
+    source: 'budget',
+    budget: toClinicAiBudgetSummary(budget),
   };
 }
 

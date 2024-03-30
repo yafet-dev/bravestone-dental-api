@@ -1,8 +1,10 @@
 import './env';
 import { createApp } from './app';
+import { assertTwoFactorConfiguration } from './auth/twoFactor';
 import { ensureCareHandoffListener, stopCareHandoffListener } from './clinic/handoffs/events';
 
 const port = Number(process.env.PORT || 4000);
+assertTwoFactorConfiguration();
 const app = createApp();
 
 const server = app.listen(port, () => {

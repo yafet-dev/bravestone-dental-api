@@ -1,6 +1,7 @@
 export type ToastTone = 'success' | 'error' | 'warning' | 'info';
 export type PlanId = 'plus' | 'pro' | 'elite';
 export type ClinicStatus = 'active' | 'trial' | 'banned';
+export type OrganizationStatus = ClinicStatus | 'onboarding' | 'denied';
 export type UserStatus = 'active' | 'invited' | 'banned';
 export type PaymentStatus = 'paid' | 'unpaid';
 export type InviteStatus = 'sent' | 'accepted' | 'expired';
@@ -63,6 +64,17 @@ export type AIUsage = {
   checksToday: number;
   resetDate: string;
   lastUsedAt?: string;
+  /**
+   * The weekly money cap that actually gates the assistant. `weeklyBudgetUsd` is
+   * what a super admin edits; the rest is read-only metering, priced from the
+   * token counts the provider reported.
+   */
+  weeklyBudgetUsd: number;
+  weekSpentUsd: number;
+  weekInputTokens: number;
+  weekOutputTokens: number;
+  /** ISO timestamp; empty until the clinic's first AI call opens a window. */
+  weekResetAt?: string;
 };
 
 export type ClinicDashboardMetrics = {
@@ -92,7 +104,7 @@ export type Organization = {
   owner: string;
   ownerEmail: string;
   planId: PlanId;
-  status: ClinicStatus;
+  status: OrganizationStatus;
   paymentStatus: PaymentStatus;
   dueDate: string;
   lifetimePaid: number;

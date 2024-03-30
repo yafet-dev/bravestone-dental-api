@@ -3,7 +3,9 @@ import { AuthError } from '../auth/accounts';
 import { sendAuthError } from '../auth/errors';
 import { requireAuth } from '../auth/middleware';
 import { credentialRateLimit, invitationRateLimit } from '../auth/rateLimits';
+import { readSessionClientMetadata } from '../auth/sessions';
 import { isClinicAdminRole, isSuperAdminRole } from '../clinic/roles';
+import { prisma } from '../db';
 import {
   acceptInvitation,
   createInvitation,
@@ -47,9 +49,40 @@ function resolveInviteScope(actor: { organizationId: string | null; role: string
   return { organizationId: actor.organizationId, scopeToOrganization: actor.organizationId };
 }
 
+async function requireInvitationManagementAccess(actor: {
+  organizationId: string | null;
+  role: string;
+}) {
+  if (isSuperAdminRole(actor.role)) {
+    return;
+  }
+
+  if (!isClinicAdminRole(actor.role)) {
+    throw new AuthError(403, 'forbidden', 'Only clinic admins can manage invitations.');
+  }
+
+  if (!actor.organizationId) {
+    throw new AuthError(403, 'no_organization', 'Your account is not attached to a clinic yet.');
+  }
+
+  const organization = await prisma.organization.findUnique({
+    where: { id: actor.organizationId },
+    select: { status: true },
+  });
+
+  if (organization?.status.trim().toLowerCase() !== 'active') {
+    throw new AuthError(
+      403,
+      'organization_access_blocked',
+      'This clinic is not currently accepting invitations.',
+    );
+  }
+}
+
 invitationsRouter.get('/', requireAuth, async (request, response, next) => {
   try {
     const actor = request.actor!;
+    await requireInvitationManagementAccess(actor);
     const requestedOrganizationId = typeof request.query.organizationId === 'string'
       ? request.query.organizationId.trim()
       : '';
@@ -75,6 +108,7 @@ invitationsRouter.get('/', requireAuth, async (request, response, next) => {
 invitationsRouter.post('/', requireAuth, invitationRateLimit, async (request, response, next) => {
   try {
     const actor = request.actor!;
+    await requireInvitationManagementAccess(actor);
     const scope = resolveInviteScope(actor, request.body?.organizationId);
     const result = await createInvitation({
       branchId: request.body?.branchId,
@@ -97,6 +131,7 @@ invitationsRouter.post('/', requireAuth, invitationRateLimit, async (request, re
 invitationsRouter.post('/:invitationId/resend', requireAuth, invitationRateLimit, async (request, response, next) => {
   try {
     const actor = request.actor!;
+    await requireInvitationManagementAccess(actor);
     const scope = resolveInviteScope(actor, request.body?.organizationId);
     const result = await resendInvitation({
       invitationId: request.params.invitationId,
@@ -114,6 +149,7 @@ invitationsRouter.post('/:invitationId/resend', requireAuth, invitationRateLimit
 invitationsRouter.delete('/:invitationId', requireAuth, async (request, response, next) => {
   try {
     const actor = request.actor!;
+    await requireInvitationManagementAccess(actor);
     const scope = resolveInviteScope(actor, request.body?.organizationId);
 
     response.json(await revokeInvitation({
@@ -140,9 +176,12 @@ invitationsRouter.get('/token/:token', credentialRateLimit, async (request, resp
 
 invitationsRouter.post('/accept', credentialRateLimit, async (request, response, next) => {
   try {
+    response.set('Cache-Control', 'no-store');
+    response.set('Pragma', 'no-cache');
     response.json(await acceptInvitation({
       fullName: request.body?.fullName,
       password: request.body?.password,
+      sessionMetadata: readSessionClientMetadata(request),
       token: request.body?.token,
     }));
   } catch (error) {

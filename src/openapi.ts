@@ -69,6 +69,144 @@ export const openApiDocument = {
         },
       },
     },
+    '/api/admin/organizations/{organizationId}': {
+      delete: {
+        tags: ['Admin'],
+        summary: 'Delete a clinic company',
+        description: 'Cascades through every table the company owns — branches, staff accounts, patients, appointments, payment records, and pending invitations. There is no undo.',
+        operationId: 'deleteAdminOrganization',
+        security: [{ bearerAuth: [] }],
+        parameters: [
+          {
+            name: 'organizationId',
+            in: 'path',
+            required: true,
+            schema: { type: 'string' },
+          },
+        ],
+        responses: {
+          '200': {
+            description: 'Company removed. Returns the refreshed super admin state.',
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  properties: {
+                    deleted: {
+                      type: 'object',
+                      properties: {
+                        id: { type: 'string' },
+                        name: { type: 'string' },
+                      },
+                    },
+                    state: {
+                      $ref: '#/components/schemas/AdminBootstrapState',
+                    },
+                  },
+                },
+              },
+            },
+          },
+          '403': {
+            description: 'Reserved workspace, or the caller is not a super admin.',
+            content: {
+              'application/json': {
+                schema: {
+                  $ref: '#/components/schemas/ErrorResponse',
+                },
+              },
+            },
+          },
+          '404': {
+            description: 'No such company.',
+            content: {
+              'application/json': {
+                schema: {
+                  $ref: '#/components/schemas/ErrorResponse',
+                },
+              },
+            },
+          },
+        },
+      },
+    },
+    '/api/admin/organizations/{organizationId}/status': {
+      patch: {
+        tags: ['Admin'],
+        summary: 'Make an atomic company lifecycle decision',
+        description: 'Approves, denies, reopens, suspends, or reactivates a company only when its current status still matches expectedStatus.',
+        operationId: 'updateAdminOrganizationStatus',
+        security: [{ bearerAuth: [] }],
+        parameters: [
+          {
+            name: 'organizationId',
+            in: 'path',
+            required: true,
+            schema: { type: 'string' },
+          },
+        ],
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['expectedStatus', 'status'],
+                properties: {
+                  expectedStatus: {
+                    type: 'string',
+                    enum: ['active', 'trial', 'denied', 'banned'],
+                  },
+                  status: {
+                    type: 'string',
+                    enum: ['active', 'trial', 'denied', 'banned'],
+                  },
+                },
+              },
+            },
+          },
+        },
+        responses: {
+          '200': {
+            description: 'Status changed. Returns the refreshed super admin state.',
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  properties: {
+                    organization: {
+                      type: 'object',
+                      properties: {
+                        id: { type: 'string' },
+                        name: { type: 'string' },
+                        status: { type: 'string' },
+                      },
+                    },
+                    state: { $ref: '#/components/schemas/AdminBootstrapState' },
+                  },
+                },
+              },
+            },
+          },
+          '400': {
+            description: 'Invalid lifecycle transition.',
+            content: {
+              'application/json': {
+                schema: { $ref: '#/components/schemas/ErrorResponse' },
+              },
+            },
+          },
+          '409': {
+            description: 'The company status changed in another tab.',
+            content: {
+              'application/json': {
+                schema: { $ref: '#/components/schemas/ErrorResponse' },
+              },
+            },
+          },
+        },
+      },
+    },
     '/api/admin/bootstrap': {
       get: {
         tags: ['Admin'],
@@ -188,7 +326,8 @@ export const openApiDocument = {
     '/api/auth/verify-email': {
       post: {
         tags: ['Auth'],
-        summary: 'Consume an emailed verification token and open a session',
+        summary: 'Consume an emailed verification token',
+        description: 'Opens a session for a newly verified account. If the account already has 2FA enabled, verification succeeds but a normal password-plus-2FA login is required.',
         operationId: 'postAuthVerifyEmail',
         requestBody: {
           required: true,
@@ -203,7 +342,37 @@ export const openApiDocument = {
           },
         },
         responses: {
-          '200': { $ref: '#/components/responses/SessionResponse' },
+          '200': {
+            description: 'Email verified; either a session or a login-required result.',
+            content: {
+              'application/json': {
+                schema: {
+                  oneOf: [
+                    {
+                      allOf: [
+                        { $ref: '#/components/schemas/SessionPayload' },
+                        {
+                          type: 'object',
+                          required: ['loginRequired'],
+                          properties: {
+                            loginRequired: { type: 'boolean', enum: [false] },
+                          },
+                        },
+                      ],
+                    },
+                    {
+                      type: 'object',
+                      required: ['loginRequired', 'user'],
+                      properties: {
+                        loginRequired: { type: 'boolean', enum: [true] },
+                        user: { $ref: '#/components/schemas/PublicUser' },
+                      },
+                    },
+                  ],
+                },
+              },
+            },
+          },
           '400': { $ref: '#/components/responses/AuthError' },
         },
       },
@@ -249,7 +418,8 @@ export const openApiDocument = {
     '/api/auth/login': {
       post: {
         tags: ['Auth'],
-        summary: 'Exchange an email and password for a session token',
+        summary: 'Verify primary credentials and start sign-in',
+        description: 'Returns a session immediately when two-factor authentication is disabled. Accounts with two-factor authentication enabled receive a short-lived challenge instead and must complete `/api/auth/two-factor/verify-login` before a session is issued.',
         operationId: 'postAuthLogin',
         requestBody: {
           required: true,
@@ -267,7 +437,26 @@ export const openApiDocument = {
           },
         },
         responses: {
-          '200': { $ref: '#/components/responses/SessionResponse' },
+          '200': {
+            description: 'Primary credentials accepted. The `status` discriminator identifies whether sign-in is complete or a second factor is required.',
+            content: {
+              'application/json': {
+                schema: {
+                  oneOf: [
+                    { $ref: '#/components/schemas/AuthenticatedLoginResponse' },
+                    { $ref: '#/components/schemas/TwoFactorLoginChallengeResponse' },
+                  ],
+                  discriminator: {
+                    propertyName: 'status',
+                    mapping: {
+                      authenticated: '#/components/schemas/AuthenticatedLoginResponse',
+                      two_factor_required: '#/components/schemas/TwoFactorLoginChallengeResponse',
+                    },
+                  },
+                },
+              },
+            },
+          },
           '401': { $ref: '#/components/responses/AuthError' },
           '403': {
             description: 'Unverified (`email_not_verified`), suspended, or password setup required.',
@@ -277,6 +466,42 @@ export const openApiDocument = {
               },
             },
           },
+        },
+      },
+    },
+    '/api/auth/two-factor/verify-login': {
+      post: {
+        tags: ['Auth'],
+        summary: 'Complete a two-factor sign-in challenge',
+        description: 'Accepts a current authenticator code or an unused recovery code. A session is issued only after the short-lived challenge and second factor are both valid.',
+        operationId: 'postAuthTwoFactorVerifyLogin',
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['challengeToken', 'code'],
+                properties: {
+                  challengeToken: { type: 'string' },
+                  code: { type: 'string', description: 'Current authenticator code or unused recovery code.' },
+                },
+              },
+            },
+          },
+        },
+        responses: {
+          '200': { $ref: '#/components/responses/SessionResponse' },
+          '400': { $ref: '#/components/responses/AuthError' },
+          '410': {
+            description: 'The challenge expired, was already consumed, or exhausted its allowed attempts.',
+            content: {
+              'application/json': {
+                schema: { $ref: '#/components/schemas/AuthErrorResponse' },
+              },
+            },
+          },
+          '429': { $ref: '#/components/responses/AuthError' },
         },
       },
     },
@@ -338,7 +563,20 @@ export const openApiDocument = {
           },
         },
         responses: {
-          '200': { $ref: '#/components/responses/SessionResponse' },
+          '200': {
+            description: 'Password reset completed. The user must sign in again, including a second factor when enabled.',
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  required: ['completed'],
+                  properties: {
+                    completed: { type: 'boolean', enum: [true] },
+                  },
+                },
+              },
+            },
+          },
           '400': { $ref: '#/components/responses/AuthError' },
         },
       },
@@ -362,6 +600,260 @@ export const openApiDocument = {
             },
           },
           '401': { $ref: '#/components/responses/AuthError' },
+        },
+      },
+    },
+    '/api/auth/sessions': {
+      get: {
+        tags: ['Auth'],
+        summary: 'List active account sessions',
+        description: 'Returns unexpired, unrevoked sessions for the signed-in account. The current session is determined from the bearer token.',
+        operationId: 'getAuthSessions',
+        security: [{ bearerAuth: [] }],
+        responses: {
+          '200': {
+            description: 'Active sessions, with the current device first.',
+            content: {
+              'application/json': {
+                schema: { $ref: '#/components/schemas/ActiveSessionsResponse' },
+              },
+            },
+          },
+          '401': { $ref: '#/components/responses/AuthError' },
+        },
+      },
+    },
+    '/api/auth/sessions/{sessionId}': {
+      delete: {
+        tags: ['Auth'],
+        summary: 'Revoke one active session',
+        description: 'The target must belong to the signed-in account. Revocation takes effect on its next request.',
+        operationId: 'deleteAuthSession',
+        security: [{ bearerAuth: [] }],
+        parameters: [
+          {
+            name: 'sessionId',
+            in: 'path',
+            required: true,
+            schema: { type: 'string', format: 'uuid' },
+          },
+        ],
+        responses: {
+          '200': {
+            description: 'Session revoked.',
+            content: {
+              'application/json': {
+                schema: { $ref: '#/components/schemas/SessionRevocationResponse' },
+              },
+            },
+          },
+          '401': { $ref: '#/components/responses/AuthError' },
+          '404': { $ref: '#/components/responses/AuthError' },
+          '429': { $ref: '#/components/responses/AuthError' },
+        },
+      },
+    },
+    '/api/auth/sessions/revoke-others': {
+      post: {
+        tags: ['Auth'],
+        summary: 'Revoke every other active session',
+        description: 'Rotates the account session version, revokes all previous bearer sessions, and returns a replacement session for this device.',
+        operationId: 'postAuthSessionsRevokeOthers',
+        security: [{ bearerAuth: [] }],
+        responses: {
+          '200': {
+            description: 'Other sessions revoked and this device reauthenticated.',
+            content: {
+              'application/json': {
+                schema: { $ref: '#/components/schemas/RevokeOtherSessionsResponse' },
+              },
+            },
+          },
+          '401': { $ref: '#/components/responses/AuthError' },
+          '429': { $ref: '#/components/responses/AuthError' },
+        },
+      },
+    },
+    '/api/auth/logout': {
+      post: {
+        tags: ['Auth'],
+        summary: 'Revoke the current session',
+        operationId: 'postAuthLogout',
+        security: [{ bearerAuth: [] }],
+        responses: {
+          '200': {
+            description: 'Current bearer session revoked.',
+            content: {
+              'application/json': {
+                schema: { $ref: '#/components/schemas/SessionRevocationResponse' },
+              },
+            },
+          },
+          '401': { $ref: '#/components/responses/AuthError' },
+          '429': { $ref: '#/components/responses/AuthError' },
+        },
+      },
+    },
+    '/api/auth/two-factor/status': {
+      get: {
+        tags: ['Auth'],
+        summary: 'Read the signed-in account two-factor status',
+        operationId: 'getAuthTwoFactorStatus',
+        security: [{ bearerAuth: [] }],
+        responses: {
+          '200': {
+            description: 'Current two-factor enrollment status and unused recovery-code count.',
+            content: {
+              'application/json': {
+                schema: { $ref: '#/components/schemas/TwoFactorStatusResponse' },
+              },
+            },
+          },
+          '401': { $ref: '#/components/responses/AuthError' },
+        },
+      },
+    },
+    '/api/auth/two-factor/setup': {
+      post: {
+        tags: ['Auth'],
+        summary: 'Start authenticator enrollment',
+        description: 'Reauthenticates with the current password, creates a short-lived pending enrollment, and returns its QR code and manual key. The pending enrollment is not active until confirmed.',
+        operationId: 'postAuthTwoFactorSetup',
+        security: [{ bearerAuth: [] }],
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['currentPassword'],
+                properties: {
+                  currentPassword: { type: 'string' },
+                },
+              },
+            },
+          },
+        },
+        responses: {
+          '200': {
+            description: 'Short-lived authenticator enrollment details. This response must not be cached or logged.',
+            content: {
+              'application/json': {
+                schema: { $ref: '#/components/schemas/TwoFactorSetupResponse' },
+              },
+            },
+          },
+          '400': { $ref: '#/components/responses/AuthError' },
+          '401': { $ref: '#/components/responses/AuthError' },
+          '409': { $ref: '#/components/responses/AuthError' },
+          '429': { $ref: '#/components/responses/AuthError' },
+        },
+      },
+    },
+    '/api/auth/two-factor/confirm': {
+      post: {
+        tags: ['Auth'],
+        summary: 'Confirm and enable authenticator two-factor authentication',
+        description: 'Verifies a code from the pending authenticator enrollment, enables two-factor authentication, revokes older sessions, and returns a replacement session plus recovery codes. Recovery codes are shown only in this response.',
+        operationId: 'postAuthTwoFactorConfirm',
+        security: [{ bearerAuth: [] }],
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['code'],
+                properties: {
+                  code: { type: 'string', description: 'Current code from the authenticator enrolled during setup.' },
+                },
+              },
+            },
+          },
+        },
+        responses: {
+          '200': {
+            description: 'Two-factor authentication enabled. Store the one-time recovery codes securely before leaving this response.',
+            content: {
+              'application/json': {
+                schema: { $ref: '#/components/schemas/SessionWithRecoveryCodesResponse' },
+              },
+            },
+          },
+          '400': { $ref: '#/components/responses/AuthError' },
+          '401': { $ref: '#/components/responses/AuthError' },
+          '409': { $ref: '#/components/responses/AuthError' },
+          '410': { $ref: '#/components/responses/AuthError' },
+          '429': { $ref: '#/components/responses/AuthError' },
+        },
+      },
+    },
+    '/api/auth/two-factor/disable': {
+      post: {
+        tags: ['Auth'],
+        summary: 'Disable two-factor authentication',
+        description: 'Requires the current password and either a current authenticator code or unused recovery code. Older sessions are revoked and a replacement session is returned.',
+        operationId: 'postAuthTwoFactorDisable',
+        security: [{ bearerAuth: [] }],
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['currentPassword', 'code'],
+                properties: {
+                  currentPassword: { type: 'string' },
+                  code: { type: 'string', description: 'Current authenticator code or unused recovery code.' },
+                },
+              },
+            },
+          },
+        },
+        responses: {
+          '200': { $ref: '#/components/responses/SessionResponse' },
+          '400': { $ref: '#/components/responses/AuthError' },
+          '401': { $ref: '#/components/responses/AuthError' },
+          '409': { $ref: '#/components/responses/AuthError' },
+          '429': { $ref: '#/components/responses/AuthError' },
+        },
+      },
+    },
+    '/api/auth/two-factor/recovery-codes/regenerate': {
+      post: {
+        tags: ['Auth'],
+        summary: 'Replace two-factor recovery codes',
+        description: 'Requires the current password and either a current authenticator code or unused recovery code. All previous recovery codes are invalidated, older sessions are revoked, and a replacement session is returned.',
+        operationId: 'postAuthTwoFactorRegenerateRecoveryCodes',
+        security: [{ bearerAuth: [] }],
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['currentPassword', 'code'],
+                properties: {
+                  currentPassword: { type: 'string' },
+                  code: { type: 'string', description: 'Current authenticator code or unused recovery code.' },
+                },
+              },
+            },
+          },
+        },
+        responses: {
+          '200': {
+            description: 'Replacement session and newly generated one-time recovery codes.',
+            content: {
+              'application/json': {
+                schema: { $ref: '#/components/schemas/SessionWithRecoveryCodesResponse' },
+              },
+            },
+          },
+          '400': { $ref: '#/components/responses/AuthError' },
+          '401': { $ref: '#/components/responses/AuthError' },
+          '409': { $ref: '#/components/responses/AuthError' },
+          '429': { $ref: '#/components/responses/AuthError' },
         },
       },
     },
@@ -672,6 +1164,11 @@ export const openApiDocument = {
                         email: { type: 'string', format: 'email' },
                         fullName: { type: 'string' },
                         organizationId: { type: 'string', nullable: true },
+                        organizationStatus: {
+                          type: 'string',
+                          enum: ['active', 'onboarding', 'trial', 'denied', 'banned'],
+                          nullable: true,
+                        },
                         role: { type: 'string' },
                         status: { type: 'string' },
                       },
@@ -691,6 +1188,7 @@ export const openApiDocument = {
               },
             },
           },
+          '401': { $ref: '#/components/responses/AuthError' },
           '500': {
             description: 'Unexpected server error.',
             content: {
@@ -764,6 +1262,8 @@ export const openApiDocument = {
               },
             },
           },
+          '401': { $ref: '#/components/responses/AuthError' },
+          '403': { $ref: '#/components/responses/AuthError' },
           '500': {
             description: 'Unexpected server error.',
             content: {
@@ -803,6 +1303,8 @@ export const openApiDocument = {
               },
             },
           },
+          '401': { $ref: '#/components/responses/AuthError' },
+          '403': { $ref: '#/components/responses/AuthError' },
           '500': {
             description: 'Unexpected server error.',
             content: {
@@ -813,6 +1315,164 @@ export const openApiDocument = {
               },
             },
           },
+        },
+      },
+    },
+    '/api/clinic/patient-attachments': {
+      get: {
+        tags: ['Clinic'],
+        summary: 'List patient record images',
+        description: 'Returns metadata only. Image bytes remain in private object storage and are fetched separately after the same clinic and Patients-feature checks.',
+        operationId: 'listPatientAttachments',
+        security: [{ bearerAuth: [] }],
+        parameters: [{
+          in: 'query',
+          name: 'patientId',
+          required: false,
+          schema: { type: 'string' },
+          description: 'Limit the result to one patient in the authenticated clinic.',
+        }],
+        responses: {
+          '200': {
+            description: 'Attachment metadata scoped to the authenticated clinic.',
+            content: {
+              'application/json': {
+                schema: { $ref: '#/components/schemas/PatientAttachmentListResponse' },
+              },
+            },
+          },
+          '401': { $ref: '#/components/responses/AuthError' },
+          '403': { $ref: '#/components/responses/AuthError' },
+        },
+      },
+      post: {
+        tags: ['Clinic'],
+        summary: 'Upload a patient record image',
+        description: 'Validates the owning patient and optional intended record inside the authenticated clinic, re-encodes the image as WebP, stores it privately, and returns metadata rather than image bytes. The durable record link is committed when the workspace subsequently saves the attachment reference.',
+        operationId: 'uploadPatientAttachment',
+        security: [{ bearerAuth: [] }],
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/PatientAttachmentUploadRequest' },
+            },
+          },
+        },
+        responses: {
+          '201': {
+            description: 'Image stored successfully.',
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  required: ['attachment'],
+                  properties: {
+                    attachment: { $ref: '#/components/schemas/PatientAttachment' },
+                  },
+                },
+              },
+            },
+          },
+          '400': { $ref: '#/components/responses/AuthError' },
+          '401': { $ref: '#/components/responses/AuthError' },
+          '403': { $ref: '#/components/responses/AuthError' },
+          '404': { $ref: '#/components/responses/AuthError' },
+          '409': { $ref: '#/components/responses/AuthError' },
+          '413': { $ref: '#/components/responses/AuthError' },
+          '503': { $ref: '#/components/responses/AuthError' },
+        },
+      },
+    },
+    '/api/clinic/patient-attachments/{attachmentId}/signed-url': {
+      get: {
+        tags: ['Clinic'],
+        summary: 'Authorize a short-lived attachment read',
+        description: 'Returns a two-minute signed private-bucket URL after clinic ownership and Patients-feature checks. The local development driver returns a null URL so the client can use the authenticated content fallback.',
+        operationId: 'signPatientAttachmentRead',
+        security: [{ bearerAuth: [] }],
+        parameters: [{
+          in: 'path',
+          name: 'attachmentId',
+          required: true,
+          schema: { type: 'string' },
+        }],
+        responses: {
+          '200': {
+            description: 'A short-lived direct URL, or null for the local driver.',
+            content: {
+              'application/json': {
+                schema: { $ref: '#/components/schemas/PatientAttachmentSignedUrlResponse' },
+              },
+            },
+          },
+          '401': { $ref: '#/components/responses/AuthError' },
+          '403': { $ref: '#/components/responses/AuthError' },
+          '404': { $ref: '#/components/responses/AuthError' },
+          '500': { $ref: '#/components/responses/AuthError' },
+          '503': { $ref: '#/components/responses/AuthError' },
+        },
+      },
+    },
+    '/api/clinic/patient-attachments/{attachmentId}/content': {
+      get: {
+        tags: ['Clinic'],
+        summary: 'Stream attachment bytes through the API',
+        description: 'Authenticated fallback used by local development or when a browser cannot fetch the signed bucket URL.',
+        operationId: 'getPatientAttachmentContent',
+        security: [{ bearerAuth: [] }],
+        parameters: [{
+          in: 'path',
+          name: 'attachmentId',
+          required: true,
+          schema: { type: 'string' },
+        }],
+        responses: {
+          '200': {
+            description: 'Stored WebP image.',
+            content: {
+              'image/webp': {
+                schema: { type: 'string', format: 'binary' },
+              },
+            },
+          },
+          '401': { $ref: '#/components/responses/AuthError' },
+          '403': { $ref: '#/components/responses/AuthError' },
+          '404': { $ref: '#/components/responses/AuthError' },
+          '502': { $ref: '#/components/responses/AuthError' },
+        },
+      },
+    },
+    '/api/clinic/patient-attachments/{attachmentId}': {
+      delete: {
+        tags: ['Clinic'],
+        summary: 'Delete a patient record image',
+        description: 'Removes the private object and its database index after clinic ownership and Patients-feature checks. Foreign and nonexistent IDs receive the same 404.',
+        operationId: 'deletePatientAttachment',
+        security: [{ bearerAuth: [] }],
+        parameters: [{
+          in: 'path',
+          name: 'attachmentId',
+          required: true,
+          schema: { type: 'string' },
+        }],
+        responses: {
+          '200': {
+            description: 'The image was deleted.',
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  required: ['id'],
+                  properties: { id: { type: 'string' } },
+                },
+              },
+            },
+          },
+          '401': { $ref: '#/components/responses/AuthError' },
+          '403': { $ref: '#/components/responses/AuthError' },
+          '404': { $ref: '#/components/responses/AuthError' },
+          '503': { $ref: '#/components/responses/AuthError' },
         },
       },
     },
@@ -903,7 +1563,7 @@ export const openApiDocument = {
         type: 'http',
         scheme: 'bearer',
         bearerFormat: 'JWT',
-        description: 'Session token returned by the login, verify-email, reset-password, and invitation-accept endpoints.',
+        description: 'Session token returned by completed login, non-MFA verify-email, two-factor verification, invitation-accept, password-change, and two-factor credential-management endpoints.',
       },
     },
     responses: {
@@ -921,19 +1581,7 @@ export const openApiDocument = {
         description: 'A session token and the account it belongs to.',
         content: {
           'application/json': {
-            schema: {
-              type: 'object',
-              properties: {
-                session: {
-                  type: 'object',
-                  properties: {
-                    expiresIn: { type: 'integer', description: 'Lifetime in seconds.' },
-                    token: { type: 'string' },
-                  },
-                },
-                user: { $ref: '#/components/schemas/PublicUser' },
-              },
-            },
+            schema: { $ref: '#/components/schemas/SessionPayload' },
           },
         },
       },
@@ -964,7 +1612,7 @@ export const openApiDocument = {
     schemas: {
       HealthResponse: {
         type: 'object',
-        required: ['status', 'service', 'uptime', 'timestamp'],
+        required: ['status', 'service', 'uptime', 'timestamp', 'attachmentStorage'],
         properties: {
           status: {
             type: 'string',
@@ -993,6 +1641,15 @@ export const openApiDocument = {
               issue: { type: 'string', nullable: true },
             },
           },
+          attachmentStorage: {
+            type: 'object',
+            required: ['configured', 'driver', 'localFallbackAllowed'],
+            properties: {
+              configured: { type: 'boolean' },
+              driver: { type: 'string', enum: ['supabase', 'local'] },
+              localFallbackAllowed: { type: 'boolean' },
+            },
+          },
         },
       },
       AuthErrorResponse: {
@@ -1008,6 +1665,7 @@ export const openApiDocument = {
       },
       PublicUser: {
         type: 'object',
+        required: ['id', 'email', 'fullName', 'role', 'status', 'organizationId', 'avatarUrl', 'emailVerified', 'mustChangePassword', 'twoFactorEnabled'],
         properties: {
           id: { type: 'string' },
           email: { type: 'string', format: 'email' },
@@ -1018,7 +1676,139 @@ export const openApiDocument = {
           avatarUrl: { type: 'string', nullable: true },
           emailVerified: { type: 'boolean' },
           mustChangePassword: { type: 'boolean' },
+          twoFactorEnabled: { type: 'boolean' },
         },
+      },
+      SessionPayload: {
+        type: 'object',
+        required: ['session', 'user'],
+        properties: {
+          session: {
+            type: 'object',
+            required: ['expiresIn', 'token'],
+            properties: {
+              expiresIn: { type: 'integer', description: 'Lifetime in seconds.' },
+              token: { type: 'string' },
+            },
+          },
+          user: { $ref: '#/components/schemas/PublicUser' },
+        },
+      },
+      ActiveSession: {
+        type: 'object',
+        required: [
+          'id',
+          'current',
+          'browser',
+          'os',
+          'deviceType',
+          'deviceLabel',
+          'ipAddress',
+          'createdAt',
+          'lastSeenAt',
+          'expiresAt',
+        ],
+        properties: {
+          id: { type: 'string', format: 'uuid' },
+          current: { type: 'boolean' },
+          browser: { type: 'string' },
+          os: { type: 'string' },
+          deviceType: {
+            type: 'string',
+            enum: ['desktop', 'mobile', 'tablet', 'unknown'],
+          },
+          deviceLabel: { type: 'string' },
+          ipAddress: { type: 'string', nullable: true },
+          createdAt: { type: 'string', format: 'date-time' },
+          lastSeenAt: { type: 'string', format: 'date-time' },
+          expiresAt: { type: 'string', format: 'date-time' },
+        },
+      },
+      ActiveSessionsResponse: {
+        type: 'object',
+        required: ['sessions'],
+        properties: {
+          sessions: {
+            type: 'array',
+            items: { $ref: '#/components/schemas/ActiveSession' },
+          },
+        },
+      },
+      SessionRevocationResponse: {
+        type: 'object',
+        required: ['revoked', 'revokedCurrent'],
+        properties: {
+          revoked: { type: 'boolean', enum: [true] },
+          revokedCurrent: { type: 'boolean' },
+        },
+      },
+      RevokeOtherSessionsResponse: {
+        allOf: [
+          { $ref: '#/components/schemas/SessionPayload' },
+          {
+            type: 'object',
+            required: ['revokedCount'],
+            properties: {
+              revokedCount: { type: 'integer', minimum: 0 },
+            },
+          },
+        ],
+      },
+      AuthenticatedLoginResponse: {
+        allOf: [
+          { $ref: '#/components/schemas/SessionPayload' },
+          {
+            type: 'object',
+            required: ['status'],
+            properties: {
+              status: { type: 'string', enum: ['authenticated'] },
+            },
+          },
+        ],
+      },
+      TwoFactorLoginChallengeResponse: {
+        type: 'object',
+        required: ['status', 'challengeToken', 'expiresIn'],
+        properties: {
+          status: { type: 'string', enum: ['two_factor_required'] },
+          challengeToken: { type: 'string', description: 'Opaque, short-lived token accepted only by the two-factor login verification endpoint.' },
+          expiresIn: { type: 'integer', description: 'Challenge lifetime in seconds.' },
+        },
+      },
+      TwoFactorStatusResponse: {
+        type: 'object',
+        required: ['enabled', 'enabledAt', 'recoveryCodesRemaining'],
+        properties: {
+          enabled: { type: 'boolean' },
+          enabledAt: { type: 'string', format: 'date-time', nullable: true },
+          recoveryCodesRemaining: { type: 'integer', minimum: 0 },
+        },
+      },
+      TwoFactorSetupResponse: {
+        type: 'object',
+        required: ['manualKey', 'qrCodeDataUrl', 'setupExpiresAt'],
+        properties: {
+          manualKey: { type: 'string', description: 'TOTP secret formatted for manual entry. Treat as a password.' },
+          qrCodeDataUrl: { type: 'string', description: 'PNG data URL encoding the authenticator provisioning URI. Treat as a password.' },
+          setupExpiresAt: { type: 'string', format: 'date-time' },
+        },
+      },
+      SessionWithRecoveryCodesResponse: {
+        allOf: [
+          { $ref: '#/components/schemas/SessionPayload' },
+          {
+            type: 'object',
+            required: ['recoveryCodes'],
+            properties: {
+              recoveryCodes: {
+                type: 'array',
+                minItems: 1,
+                items: { type: 'string' },
+                description: 'New one-time recovery codes. The server does not return these values again.',
+              },
+            },
+          },
+        ],
       },
       ErrorResponse: {
         type: 'object',
@@ -1027,6 +1817,84 @@ export const openApiDocument = {
           message: {
             type: 'string',
           },
+        },
+      },
+      PatientAttachment: {
+        type: 'object',
+        required: [
+          'id',
+          'patientId',
+          'recordId',
+          'fileName',
+          'bytes',
+          'width',
+          'height',
+          'isRadiograph',
+          'uploadedByName',
+          'createdAt',
+        ],
+        properties: {
+          id: { type: 'string' },
+          patientId: { type: 'string' },
+          recordId: { type: 'string', nullable: true },
+          fileName: { type: 'string' },
+          bytes: { type: 'integer', minimum: 1 },
+          width: { type: 'integer', minimum: 1, nullable: true },
+          height: { type: 'integer', minimum: 1, nullable: true },
+          isRadiograph: { type: 'boolean' },
+          uploadedByName: { type: 'string', nullable: true },
+          createdAt: { type: 'string', format: 'date-time' },
+        },
+      },
+      PatientAttachmentUploadRequest: {
+        type: 'object',
+        required: ['patientId', 'fileName', 'dataUrl'],
+        properties: {
+          patientId: { type: 'string' },
+          recordId: { type: 'string' },
+          fileName: { type: 'string', maxLength: 180 },
+          dataUrl: {
+            type: 'string',
+            description: 'Base64 image data URL. Decoded source size is limited to 25 MiB.',
+          },
+          isRadiograph: {
+            type: 'boolean',
+            description: 'May promote an image to the diagnostic preservation policy; a radiograph-like filename cannot be downgraded.',
+          },
+        },
+      },
+      PatientAttachmentListResponse: {
+        type: 'object',
+        required: ['attachments', 'storage'],
+        properties: {
+          attachments: {
+            type: 'array',
+            items: { $ref: '#/components/schemas/PatientAttachment' },
+          },
+          storage: {
+            type: 'object',
+            required: ['configured', 'driver', 'localFallbackAllowed'],
+            properties: {
+              configured: { type: 'boolean' },
+              driver: { type: 'string', enum: ['supabase', 'local'] },
+              localFallbackAllowed: { type: 'boolean' },
+            },
+          },
+        },
+      },
+      PatientAttachmentSignedUrlResponse: {
+        type: 'object',
+        required: ['url', 'expiresAt', 'bytes', 'checksum', 'contentType'],
+        properties: {
+          url: { type: 'string', format: 'uri', nullable: true },
+          expiresAt: { type: 'string', format: 'date-time', nullable: true },
+          bytes: { type: 'integer', minimum: 1 },
+          checksum: {
+            type: 'string',
+            pattern: '^[0-9a-f]{64}$',
+            description: 'SHA-256 of the stored bytes; clients verify the signed response before rendering.',
+          },
+          contentType: { type: 'string', enum: ['image/webp'] },
         },
       },
       PlanFeature: {
@@ -1128,7 +1996,7 @@ export const openApiDocument = {
           owner: { type: 'string' },
           ownerEmail: { type: 'string', format: 'email' },
           planId: { type: 'string', enum: ['plus', 'pro', 'elite'] },
-          status: { type: 'string', enum: ['active', 'trial', 'banned'] },
+          status: { type: 'string', enum: ['active', 'onboarding', 'trial', 'denied', 'banned'] },
           paymentStatus: { type: 'string', enum: ['paid', 'unpaid'] },
           dueDate: { type: 'string' },
           lifetimePaid: { type: 'integer' },

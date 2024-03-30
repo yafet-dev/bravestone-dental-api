@@ -1,16 +1,20 @@
-import type { Invitation } from '@prisma/client';
-import { AuthError, toPublicUser, type PublicUser } from '../auth/accounts';
+import { Prisma, type Invitation } from '@prisma/client';
+import { AuthError } from '../auth/accounts';
 import {
   createEmailToken,
-  createSessionToken,
   describePasswordIssue,
-  getSessionTtlSeconds,
   hashEmailToken,
   hashPassword,
   invitationTtlMs,
   isValidEmail,
   normalizeEmail,
 } from '../auth/credentials';
+import {
+  buildAuthenticatedResponse,
+  toPublicUser,
+  type PublicUser,
+  type SessionClientMetadata,
+} from '../auth/sessions';
 import {
   isAssignableClinicRole,
   isLegacyClinicRole,
@@ -45,14 +49,49 @@ export type InvitationRecord = {
 type InvitationWithRelations = Invitation & {
   branch?: { name: string } | null;
   invitedByUser?: { fullName: string } | null;
-  organization?: { name: string } | null;
+  organization?: { name: string; status: string } | null;
 };
 
 const invitationInclude = {
   branch: { select: { name: true } },
   invitedByUser: { select: { fullName: true } },
-  organization: { select: { name: true } },
+  organization: { select: { name: true, status: true } },
 } as const;
+
+function requireOrganizationAcceptingInvitations(
+  organization: { status: string } | null | undefined,
+) {
+  if (organization?.status.trim().toLowerCase() !== 'active') {
+    throw new AuthError(
+      403,
+      'organization_access_blocked',
+      'This clinic is not currently accepting invitations.',
+    );
+  }
+}
+
+async function serializableTransactionWithRetry<T>(
+  operation: (transaction: Prisma.TransactionClient) => Promise<T>,
+) {
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    try {
+      return await prisma.$transaction(operation, {
+        isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
+      });
+    } catch (error) {
+      const retryable = (
+        error instanceof Prisma.PrismaClientKnownRequestError
+        && error.code === 'P2034'
+      );
+
+      if (!retryable || attempt === 2) {
+        throw error;
+      }
+    }
+  }
+
+  throw new Error('The invitation transaction could not be completed.');
+}
 
 function toInvitationRecord(invitation: InvitationWithRelations): InvitationRecord {
   return {
@@ -145,12 +184,14 @@ export async function createInvitation(input: {
 
   const organization = await prisma.organization.findUnique({
     where: { id: input.organizationId },
-    select: { id: true, name: true },
+    select: { id: true, name: true, status: true },
   });
 
   if (!organization) {
     throw new AuthError(404, 'organization_not_found', 'That clinic no longer exists.');
   }
+
+  requireOrganizationAcceptingInvitations(organization);
 
   const branchId = await resolveBranch(organization.id, input.branchId);
   const existingUser = await prisma.user.findUnique({ where: { email } });
@@ -269,6 +310,8 @@ export async function resendInvitation(input: { invitationId: string; organizati
     throw new AuthError(404, 'invitation_not_found', 'That invitation no longer exists.');
   }
 
+  requireOrganizationAcceptingInvitations(invitation.organization);
+
   if (invitation.status === 'accepted') {
     throw new AuthError(409, 'already_accepted', 'That invitation has already been accepted.');
   }
@@ -364,6 +407,8 @@ export async function describeInvitationToken(token: unknown) {
     throw new AuthError(410, 'expired_invitation', 'This invitation has expired. Ask your clinic admin to resend it.');
   }
 
+  requireOrganizationAcceptingInvitations(invitation.organization);
+
   return {
     branchName: invitation.branch?.name || '',
     email: invitation.email,
@@ -375,8 +420,17 @@ export async function describeInvitationToken(token: unknown) {
   };
 }
 
-export async function acceptInvitation(input: { fullName?: unknown; password: unknown; token: unknown }): Promise<{
+export async function acceptInvitation(input: {
+  fullName?: unknown;
+  password: unknown;
+  sessionMetadata: SessionClientMetadata;
+  token: unknown;
+}): Promise<{
   session: { expiresIn: number; token: string };
+  user: PublicUser;
+  loginRequired?: false;
+} | {
+  loginRequired: true;
   user: PublicUser;
 }> {
   const password = typeof input.password === 'string' ? input.password : '';
@@ -396,6 +450,8 @@ export async function acceptInvitation(input: { fullName?: unknown; password: un
     throw new AuthError(410, 'expired_invitation', 'This invitation has expired. Ask your clinic admin to resend it.');
   }
 
+  requireOrganizationAcceptingInvitations(invitation.organization);
+
   const requestedName = typeof input.fullName === 'string' ? input.fullName.trim().replace(/\s+/g, ' ') : '';
   const now = new Date();
   const passwordHash = await hashPassword(password);
@@ -405,19 +461,28 @@ export async function acceptInvitation(input: { fullName?: unknown; password: un
     throw new AuthError(403, 'account_banned', 'This account has been suspended. Contact your clinic administrator.');
   }
 
-  const user = await prisma.$transaction(async (transaction) => {
+  const user = await serializableTransactionWithRetry(async (transaction) => {
+    const acceptingOrganization = await transaction.organization.findUnique({
+      where: { id: invitation.organizationId },
+      select: { status: true },
+    });
+
+    // Repeat the lifecycle check inside the same serializable transaction as
+    // acceptance so a concurrent denial/suspension cannot race this invite.
+    requireOrganizationAcceptingInvitations(acceptingOrganization);
+
     const fullName = requestedName || invitation.fullName || existingUser?.fullName || invitation.email.split('@')[0] || 'Clinic User';
     const acceptedUser = existingUser
       ? await transaction.user.update({
           where: { id: existingUser.id },
           data: {
             authUserId: existingUser.authUserId || existingUser.id,
+            authVersion: { increment: 1 },
             branchId: invitation.branchId || existingUser.branchId,
             defaultBranchId: invitation.branchId || existingUser.defaultBranchId,
             // Accepting through the emailed link proves the address is real.
             emailVerifiedAt: existingUser.emailVerifiedAt || now,
             fullName,
-            lastActiveAt: now,
             mustChangePassword: false,
             organizationId: invitation.organizationId,
             passwordHash,
@@ -432,7 +497,6 @@ export async function acceptInvitation(input: { fullName?: unknown; password: un
             email: invitation.email,
             emailVerifiedAt: now,
             fullName,
-            lastActiveAt: now,
             organizationId: invitation.organizationId,
             passwordHash,
             role: invitation.role,
@@ -450,17 +514,35 @@ export async function acceptInvitation(input: { fullName?: unknown; password: un
         tokenHash: null,
       },
     });
+    await transaction.twoFactorLoginChallenge.deleteMany({ where: { userId: acceptedUser.id } });
+    await transaction.authSession.updateMany({
+      where: { userId: acceptedUser.id, revokedAt: null },
+      data: { revokedAt: now },
+    });
 
     return acceptedUser.authUserId
       ? acceptedUser
       : transaction.user.update({ where: { id: acceptedUser.id }, data: { authUserId: acceptedUser.id } });
   });
 
+  const twoFactorEnabled = Boolean((await prisma.userTwoFactorCredential.findUnique({
+    where: { userId: user.id },
+    select: { enabledAt: true },
+  }))?.enabledAt);
+
+  if (twoFactorEnabled) {
+    // Accepting the invitation changed the password and clinic membership, but
+    // an emailed link is not a replacement for the user's authenticator.
+    return { loginRequired: true, user: toPublicUser(user, true) };
+  }
+
+  const signedInUser = await prisma.user.update({
+    where: { id: user.id },
+    data: { lastActiveAt: now },
+  });
+
   return {
-    session: {
-      expiresIn: getSessionTtlSeconds(),
-      token: createSessionToken({ email: user.email, role: user.role, userId: user.id }),
-    },
-    user: toPublicUser(user),
+    ...await buildAuthenticatedResponse(signedInUser, false, input.sessionMetadata),
+    loginRequired: false,
   };
 }

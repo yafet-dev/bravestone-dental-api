@@ -38,7 +38,6 @@ const defaultClinicUserPreferences = {
   billingAlerts: true,
   recordReviewAlerts: false,
   weeklySummary: true,
-  twoFactor: true,
   compactMode: false,
   defaultLandingPage: 'Dashboard overview',
   calendarView: 'Week view',

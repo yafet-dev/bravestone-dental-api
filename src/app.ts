@@ -3,6 +3,7 @@ import express, { NextFunction, Request, Response } from 'express';
 import swaggerUi from 'swagger-ui-express';
 import { adminRouter } from './admin/router';
 import { authRouter } from './auth/router';
+import { describeAttachmentStorage } from './clinic/patientAttachments';
 import { clinicRouter } from './clinic/router';
 import { invitationsRouter } from './invitations/router';
 import { getSmtpConfigIssue, getSmtpSettings } from './mail/mailer';
@@ -15,10 +16,28 @@ const serviceName = 'bravestone-dental-api';
 export function createApp() {
   const app = express();
   const corsOrigin = process.env.CORS_ORIGIN || true;
+  const smallJsonParser = express.json({ limit: '1mb' });
 
   app.disable('x-powered-by');
   app.use(cors({ origin: corsOrigin }));
-  app.use(express.json({ limit: '30mb' }));
+  app.use((request, response, next) => {
+    // Large JSON is needed only for authenticated clinic/admin state and profile
+    // image routes. Their routers run requireAuth *before* their larger parsers,
+    // preventing an anonymous client from making the server allocate tens of MB.
+    const path = request.path;
+    const authenticatedLargeBodyRoute = (
+      path.startsWith('/api/clinic')
+      || path.startsWith('/api/admin')
+      || path === '/api/users/me/avatar'
+    );
+
+    if (authenticatedLargeBodyRoute) {
+      next();
+      return;
+    }
+
+    smallJsonParser(request, response, next);
+  });
 
   app.get('/', (_request, response) => {
     response.redirect('/docs');
@@ -33,6 +52,7 @@ export function createApp() {
       service: serviceName,
       uptime: Number(process.uptime().toFixed(3)),
       timestamp: new Date().toISOString(),
+      attachmentStorage: describeAttachmentStorage(),
       mail: {
         configured: smtpIssue === null,
         host: smtpSettings.host || null,
@@ -90,7 +110,12 @@ export function createApp() {
       return;
     }
 
-    response.status(500).json({ message });
+    const parserError = error as { status?: unknown; type?: unknown };
+    const payloadTooLarge = parserError?.status === 413 || parserError?.type === 'entity.too.large';
+
+    response.status(payloadTooLarge ? 413 : 500).json({
+      message: payloadTooLarge ? 'That request is too large.' : message,
+    });
   });
 
   return app;

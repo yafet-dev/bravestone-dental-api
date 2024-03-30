@@ -18,7 +18,6 @@ export type ClinicUserPreferences = {
   billingAlerts: boolean;
   recordReviewAlerts: boolean;
   weeklySummary: boolean;
-  twoFactor: boolean;
   compactMode: boolean;
   defaultLandingPage?: string;
   calendarView?: string;
@@ -86,12 +85,31 @@ export type ClinicAIMemory = {
   reportInsights?: ClinicAIReportInsightSet;
 };
 
+/**
+ * The clinic's weekly AI allowance, as the frontend needs to render it: a meter,
+ * a countdown to the reset, and whether sending is still permitted.
+ */
+export type ClinicAiBudgetSummary = {
+  budgetUsd: number;
+  spentUsd: number;
+  remainingUsd: number;
+  usedPercent: number;
+  inputTokens: number;
+  outputTokens: number;
+  remainingTokensEstimate: number;
+  resetAt: string;
+  resetInSeconds: number;
+  exhausted: boolean;
+};
+
 export type ClinicAssistantReplyResult = {
   memory: ClinicAIMemory;
   message: ClinicAssistantMessage;
   sessionTitle?: string;
   model?: string;
-  source: 'deepseek' | 'fallback';
+  /** `budget` means the weekly allowance was spent and no model call was made. */
+  source: 'deepseek' | 'fallback' | 'budget';
+  budget?: ClinicAiBudgetSummary;
 };
 
 export type ClinicReportInsightsResult = {
@@ -222,6 +240,10 @@ export type ClinicRecordAttachment = {
   name: string;
   type: string;
   dataUrl: string;
+  /** Current storage-backed form. The bytes are fetched separately from the API. */
+  attachmentId?: string;
+  /** Preserves the diagnostic-image policy chosen when the file was uploaded. */
+  isRadiograph?: boolean;
 };
 
 export type ClinicDentalExamination = {
@@ -439,6 +461,14 @@ export type ClinicFinanceEntry = {
   amount: number;
   status: 'Received' | 'Expected' | 'Paid' | 'Scheduled' | 'Due';
   frequency: 'One-time' | 'Monthly';
+  /** Ties every occurrence of one repeating monthly item together. */
+  seriesId?: string;
+  /** Whether the series still books new months. */
+  recurrence?: 'active' | 'stopped';
+  /** 'YYYY-MM' watermark: last month already booked for this series. */
+  generatedThrough?: string;
+  /** True when the monthly roll-forward created this row, not a person. */
+  autoAdded?: boolean;
 };
 
 export type ClinicWorkspaceState = {

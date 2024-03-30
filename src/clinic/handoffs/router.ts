@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { Router, type Request, type Response } from 'express';
+import { prisma } from '../../db';
 import {
   acknowledgeHandoff,
   assignPatient,
@@ -160,6 +161,8 @@ careHandoffsRouter.post('/:id/acknowledge', async (request, response, next) => {
 
 /** Idle gap after which a comment frame is sent to keep proxies from closing. */
 const heartbeatMs = 25_000;
+/** Revalidate long-lived streams after a platform suspension or denial. */
+const accessRecheckMs = 5_000;
 
 careHandoffsRouter.get('/stream', async (request, response, next) => {
   const organizationId = resolveOrganizationId(request, response);
@@ -198,6 +201,7 @@ careHandoffsRouter.get('/stream', async (request, response, next) => {
   // real error. Anything that goes wrong from here just closes the stream and
   // lets the client reconnect.
   let heartbeat: NodeJS.Timeout | null = null;
+  let accessRecheck: NodeJS.Timeout | null = null;
   let unsubscribe: (() => void) | null = null;
   let closed = false;
 
@@ -211,6 +215,11 @@ careHandoffsRouter.get('/stream', async (request, response, next) => {
     if (heartbeat) {
       clearInterval(heartbeat);
       heartbeat = null;
+    }
+
+    if (accessRecheck) {
+      clearInterval(accessRecheck);
+      accessRecheck = null;
     }
 
     unsubscribe?.();
@@ -256,4 +265,18 @@ careHandoffsRouter.get('/stream', async (request, response, next) => {
     // A comment frame: ignored by the parser, enough to keep the socket alive.
     write(': keep-alive\n\n');
   }, heartbeatMs);
+
+  accessRecheck = setInterval(() => {
+    void prisma.organization.findUnique({
+      where: { id: organizationId },
+      select: { status: true },
+    }).then((organization) => {
+      if (organization?.status.trim().toLowerCase() !== 'active') {
+        close();
+      }
+    }).catch((error) => {
+      console.error('Care handoff access recheck failed:', error instanceof Error ? error.message : error);
+      close();
+    });
+  }, accessRecheckMs);
 });

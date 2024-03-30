@@ -1,13 +1,32 @@
-import { Router, type Request, type Response } from 'express';
+import express, { Router, type NextFunction, type Request, type Response } from 'express';
+import { sendAuthError } from '../auth/errors';
 import { requireAuth } from '../auth/middleware';
-import { mergeClinicStateForAccess, scopeClinicStateForAccess } from './access';
+import { prisma } from '../db';
+import {
+  mergeClinicStateForAccess,
+  mergeClinicStateForOnboarding,
+  scopeClinicStateForAccess,
+  scopeClinicStateForOnboarding,
+} from './access';
+import { loadAiBudget } from './aiBudget';
 import { careHandoffsRouter } from './handoffs/router';
+import {
+  createPatientAttachment,
+  deletePatientAttachment,
+  describeAttachmentStorage,
+  listPatientAttachments,
+  reconcilePatientAttachmentReferences,
+  resolvePatientAttachment,
+  signedReadUrl,
+  validatePatientAttachmentReferences,
+} from './patientAttachments';
 import {
   canOpenFeature,
   resolveWorkspaceAccess,
   type WorkspaceAccess,
   type WorkspaceFeature,
 } from './permissions';
+import { isClinicAdminRole } from './roles';
 import {
   generateClinicAssistantReply,
   generateClinicReportInsights,
@@ -18,9 +37,71 @@ import type { ClinicAssistantAttachment, ClinicWorkspaceState } from './types';
 
 export const clinicRouter = Router();
 
+async function requireClinicOrganizationAccess(
+  request: Request,
+  response: Response,
+  next: NextFunction,
+) {
+  try {
+    const organizationId = request.actor?.organizationId;
+
+    if (!organizationId) {
+      response.status(403).json({
+        code: 'organization_required',
+        message: 'Unable to resolve the clinic workspace for this session.',
+      });
+      return;
+    }
+
+    const organization = await prisma.organization.findUnique({
+      where: { id: organizationId },
+      select: { status: true },
+    });
+    const organizationStatus = organization?.status.trim().toLowerCase() || '';
+    response.locals.organizationStatus = organizationStatus;
+    const onboardingBootstrapRequest = (
+      organizationStatus === 'onboarding'
+      && request.path === '/bootstrap'
+      && (request.method === 'GET' || request.method === 'PUT')
+    );
+
+    if (
+      !organization
+      || (
+        organizationStatus !== 'active'
+        && !onboardingBootstrapRequest
+      )
+    ) {
+      response.status(403).json({
+        code: 'organization_access_blocked',
+        message: organizationStatus === 'onboarding'
+          ? 'Finish clinic onboarding before using the workspace.'
+          : organizationStatus === 'trial'
+            ? 'This clinic is waiting for approval.'
+            : organizationStatus === 'denied'
+              ? 'This clinic application was not approved.'
+              : 'This clinic workspace is suspended.',
+        organizationStatus: organization?.status || null,
+      });
+      return;
+    }
+
+    next();
+  } catch (error) {
+    next(error);
+  }
+}
+
 // Every clinic route reads or writes patient data, so all of them need a signed
 // session before the handler runs.
 clinicRouter.use(requireAuth);
+// Denial and suspension apply to every clinic capability, including live
+// handoffs, AI, reports, and attachment reads. Enforce the organization state
+// once at the router boundary so no individual endpoint can forget the check.
+clinicRouter.use(requireClinicOrganizationAccess);
+// A 25 MiB accepted image grows to about 33.4 MiB as base64 before JSON
+// framing. This parser runs only after requireAuth above.
+clinicRouter.use(express.json({ limit: '36mb' }));
 
 // Care handoffs are the one live channel in the workspace, so they carry their
 // own small routes instead of riding the whole-workspace bootstrap payload.
@@ -177,7 +258,11 @@ clinicRouter.get('/bootstrap', async (request, response, next) => {
       return;
     }
 
-    response.json(scopeClinicStateForAccess(context.state, context.access, context.actorId));
+    response.json(
+      response.locals.organizationStatus === 'onboarding'
+        ? scopeClinicStateForOnboarding(context.state, context.actorId)
+        : scopeClinicStateForAccess(context.state, context.access, context.actorId),
+    );
   } catch (error) {
     next(error);
   }
@@ -196,17 +281,70 @@ clinicRouter.put('/bootstrap', async (request, response, next) => {
     // a replacement for it. Anything they cannot read survives untouched, and
     // anything they cannot manage — roles, grants, branches, other people's
     // accounts — is taken from storage regardless of what they sent.
-    const nextState = mergeClinicStateForAccess({
-      access: context.access,
-      actorId: context.actorId,
-      current: context.state,
-      incoming: request.body as ClinicWorkspaceState,
-    });
-    const savedState = await replaceClinicState(nextState, context.organizationId);
+    let nextState: ClinicWorkspaceState;
 
-    response.json(scopeClinicStateForAccess(savedState, context.access, context.actorId));
+    if (response.locals.organizationStatus === 'onboarding') {
+      if (!isClinicAdminRole(request.actor?.role || '')) {
+        response.status(403).json({
+          code: 'forbidden',
+          message: 'Only the clinic owner can submit this application.',
+        });
+        return;
+      }
+
+      try {
+        nextState = mergeClinicStateForOnboarding({
+          actorId: context.actorId,
+          current: context.state,
+          incoming: request.body as ClinicWorkspaceState,
+        });
+      } catch (error) {
+        response.status(400).json({
+          code: 'invalid_onboarding_application',
+          message: error instanceof Error
+            ? error.message
+            : 'The clinic application is incomplete.',
+        });
+        return;
+      }
+    } else {
+      // The caller holds a redacted copy of the workspace, so their payload is
+      // treated as a set of proposed edits against the stored state rather than as
+      // a replacement for it. Anything they cannot read survives untouched, and
+      // anything they cannot manage — roles, grants, branches, other people's
+      // accounts — is taken from storage regardless of what they sent.
+      nextState = mergeClinicStateForAccess({
+        access: context.access,
+        actorId: context.actorId,
+        current: context.state,
+        incoming: request.body as ClinicWorkspaceState,
+      });
+    }
+    await validatePatientAttachmentReferences({
+      diagnoses: nextState.diagnoses,
+      organizationId: context.organizationId,
+    });
+    const savedState = await replaceClinicState(
+      nextState,
+      context.organizationId,
+      response.locals.organizationStatus === 'onboarding'
+        ? { expectedOrganizationStatus: 'onboarding' }
+        : undefined,
+    );
+    await reconcilePatientAttachmentReferences({
+      diagnoses: savedState.diagnoses,
+      organizationId: context.organizationId,
+    });
+
+    response.json(
+      response.locals.organizationStatus === 'onboarding'
+        ? scopeClinicStateForOnboarding(savedState, context.actorId)
+        : scopeClinicStateForAccess(savedState, context.access, context.actorId),
+    );
   } catch (error) {
-    next(error);
+    if (!sendAuthError(error, response)) {
+      next(error);
+    }
   }
 });
 
@@ -254,6 +392,44 @@ clinicRouter.post('/assistant/reply', async (request, response, next) => {
   }
 });
 
+// Lets the assistant screen show the remaining allowance and its reset countdown
+// without having to send a message first. Reading is deliberately not gated on
+// the `ai_assistant` feature: a clinic whose AI is switched off still benefits
+// from seeing why.
+clinicRouter.get('/assistant/budget', async (request, response, next) => {
+  try {
+    const context = await resolveClinicRequestContext(request, response);
+
+    if (!context) {
+      return;
+    }
+
+    const budget = await loadAiBudget(context.organizationId);
+
+    if (!budget) {
+      response.status(404).json({ message: 'This clinic workspace does not exist yet.' });
+      return;
+    }
+
+    response.json({
+      budget: {
+        budgetUsd: budget.budgetUsd,
+        spentUsd: budget.spentUsd,
+        remainingUsd: budget.remainingUsd,
+        usedPercent: budget.usedPercent,
+        inputTokens: budget.inputTokens,
+        outputTokens: budget.outputTokens,
+        remainingTokensEstimate: budget.remainingTokensEstimate,
+        resetAt: budget.resetAt,
+        resetInSeconds: budget.resetInSeconds,
+        exhausted: budget.exhausted,
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
 clinicRouter.post('/report-insights', async (request, response, next) => {
   try {
     const context = await resolveClinicRequestContext(request, response);
@@ -277,5 +453,139 @@ clinicRouter.post('/report-insights', async (request, response, next) => {
     response.json(insights);
   } catch (error) {
     next(error);
+  }
+});
+
+/**
+ * Patient record images.
+ *
+ * The bytes live in a private bucket, not in the workspace snapshot, so these are
+ * separate small routes rather than part of the bootstrap payload — a chart with
+ * twenty photos should not make every page load carry twenty images.
+ *
+ * Reads are streamed through the API with the session token in an Authorization
+ * header, so no credential ever appears in a URL and the storage path never reaches
+ * the browser.
+ */
+clinicRouter.get('/patient-attachments', async (request, response, next) => {
+  try {
+    const context = await resolveClinicRequestContext(request, response);
+
+    if (!context) {
+      return;
+    }
+
+    const patientId = typeof request.query.patientId === 'string' ? request.query.patientId.trim() : '';
+    const attachments = await listPatientAttachments({
+      access: context.access,
+      organizationId: context.organizationId,
+      ...(patientId ? { patientId } : {}),
+    });
+
+    response.json({ attachments, storage: describeAttachmentStorage() });
+  } catch (error) {
+    if (!sendAuthError(error, response)) {
+      next(error);
+    }
+  }
+});
+
+clinicRouter.post('/patient-attachments', async (request, response, next) => {
+  try {
+    const context = await resolveClinicRequestContext(request, response);
+
+    if (!context) {
+      return;
+    }
+
+    const attachment = await createPatientAttachment({
+      access: context.access,
+      actorId: context.actorId,
+      actorName: request.actor?.fullName,
+      body: (request.body ?? {}) as Record<string, unknown>,
+      organizationId: context.organizationId,
+    });
+
+    response.status(201).json({ attachment });
+  } catch (error) {
+    if (!sendAuthError(error, response)) {
+      next(error);
+    }
+  }
+});
+
+/**
+ * Authorizes a direct bucket read and returns a URL that expires after two minutes.
+ *
+ * The local development driver cannot sign URLs, so it returns `url: null`; clients
+ * then use the authenticated `/content` fallback below.
+ */
+clinicRouter.get('/patient-attachments/:attachmentId/signed-url', async (request, response, next) => {
+  try {
+    const context = await resolveClinicRequestContext(request, response);
+
+    if (!context) {
+      return;
+    }
+
+    const signed = await signedReadUrl({
+      access: context.access,
+      attachmentId: request.params.attachmentId!,
+      organizationId: context.organizationId,
+    });
+
+    response.setHeader('Cache-Control', 'no-store');
+    response.json(signed);
+  } catch (error) {
+    if (!sendAuthError(error, response)) {
+      next(error);
+    }
+  }
+});
+
+clinicRouter.get('/patient-attachments/:attachmentId/content', async (request, response, next) => {
+  try {
+    const context = await resolveClinicRequestContext(request, response);
+
+    if (!context) {
+      return;
+    }
+
+    const resolved = await resolvePatientAttachment({
+      access: context.access,
+      attachmentId: request.params.attachmentId!,
+      organizationId: context.organizationId,
+    });
+
+    // Clinical images must never sit in a shared cache. `private` keeps them out of
+    // proxies while still letting the browser reuse them while the chart is open.
+    response.setHeader('Cache-Control', 'private, max-age=300');
+    response.setHeader('Content-Type', resolved.contentType);
+    response.setHeader('Content-Disposition', `inline; filename="${resolved.fileName}"`);
+    response.send(resolved.contents);
+  } catch (error) {
+    if (!sendAuthError(error, response)) {
+      next(error);
+    }
+  }
+});
+
+clinicRouter.delete('/patient-attachments/:attachmentId', async (request, response, next) => {
+  try {
+    const context = await resolveClinicRequestContext(request, response);
+
+    if (!context) {
+      return;
+    }
+
+    response.json(await deletePatientAttachment({
+      access: context.access,
+      attachmentId: request.params.attachmentId!,
+      organizationId: context.organizationId,
+    }));
+  } catch (error) {
+    if (!sendAuthError(error, response)) {
+      next(error);
+    }
   }
 });

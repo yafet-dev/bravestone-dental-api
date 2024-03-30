@@ -19,6 +19,8 @@
  *      a non-admin request, so nobody can PUT themselves a financial grant.
  */
 
+import { randomUUID } from 'node:crypto';
+
 import {
   CLINIC_FINANCES_PERMISSION,
   PATIENT_PAYMENTS_PERMISSION,
@@ -32,6 +34,7 @@ import {
   type WorkspaceFeature,
 } from './permissions';
 import type {
+  ClinicOrganizationBranch,
   ClinicOrganizationProfile,
   ClinicStaffUser,
   ClinicWorkspaceState,
@@ -65,6 +68,169 @@ const BASELINE_SLICES: StateSlice[] = [
   'roles',
   'staffUsers',
 ];
+
+const ONBOARDING_BRANCH_STATUSES = new Set<ClinicOrganizationBranch['status']>([
+  'Active',
+  'Opening soon',
+  'Paused',
+]);
+
+function readOnboardingText(value: unknown, maximumLength: number) {
+  return typeof value === 'string' ? value.trim().slice(0, maximumLength) : '';
+}
+
+/**
+ * Onboarding deliberately reuses the workspace document shape so the browser can
+ * hydrate normally, but it must not receive the workspace hidden behind approval.
+ * Only the application fields and the signed-in owner's identity leave the API.
+ */
+export function scopeClinicStateForOnboarding(
+  state: ClinicWorkspaceState,
+  actorId?: string,
+): ClinicWorkspaceState {
+  const actor = actorId ? state.staffUsers.find((user) => user.id === actorId) : undefined;
+
+  return {
+    patients: [],
+    patientProfiles: [],
+    patientPayments: [],
+    appointments: [],
+    revenueData: [],
+    doctors: [],
+    procedures: [],
+    diagnoses: [],
+    symptoms: [],
+    prescriptions: [],
+    invoices: [],
+    forms: [],
+    sickLeaves: [],
+    reports: [],
+    staffUsers: actor ? [toColleagueRecord(actor)] : [],
+    roles: [],
+    rolePermissions: [],
+    branches: state.branches.map((branch) => ({
+      id: branch.id,
+      name: branch.name,
+      city: branch.city,
+      manager: branch.manager,
+      status: branch.status,
+    })),
+    organizationProfile: {
+      name: state.organizationProfile.name,
+      legalName: state.organizationProfile.legalName,
+      contact: '',
+      license: '',
+      assistantMessages: [],
+      assistantSessions: [],
+      assistantProjects: [],
+      doctorProfileNotifications: [],
+    },
+    financeEntries: [],
+  };
+}
+
+/**
+ * Applies an onboarding submission to the server's stored state.
+ *
+ * No clinical, financial, role, or roster data is accepted from the browser.
+ * Existing branch IDs are honored only when they already belong to this
+ * organization; IDs for new branches are allocated here so a crafted request
+ * cannot re-parent another clinic's globally keyed branch.
+ */
+export function mergeClinicStateForOnboarding({
+  actorId,
+  current,
+  incoming,
+}: {
+  actorId?: string;
+  current: ClinicWorkspaceState;
+  incoming: ClinicWorkspaceState;
+}): ClinicWorkspaceState {
+  const submittedProfile = incoming?.organizationProfile;
+  const organizationName = readOnboardingText(submittedProfile?.name, 160);
+  const legalName = readOnboardingText(submittedProfile?.legalName, 200) || organizationName;
+  const submittedBranches = Array.isArray(incoming?.branches) ? incoming.branches : [];
+
+  if (organizationName.length < 2) {
+    throw new Error('Add an organization name before submitting the application.');
+  }
+
+  if (submittedBranches.length < 1 || submittedBranches.length > 12) {
+    throw new Error('An application must include between 1 and 12 branches.');
+  }
+
+  const storedBranches = new Map(current.branches.map((branch) => [branch.id, branch]));
+  const usedBranchIds = new Set<string>();
+  const submittedBranchIds = new Map<string, string>();
+  const branches = submittedBranches.map((submitted, index): ClinicOrganizationBranch => {
+    const submittedId = readOnboardingText(submitted?.id, 200);
+    const sameOrganizationBranch = submittedId ? storedBranches.get(submittedId) : undefined;
+    const indexedStoredBranch = current.branches[index];
+    const reusableIndexedId = indexedStoredBranch && !usedBranchIds.has(indexedStoredBranch.id)
+      ? indexedStoredBranch.id
+      : '';
+    const id = sameOrganizationBranch && !usedBranchIds.has(sameOrganizationBranch.id)
+      ? sameOrganizationBranch.id
+      : reusableIndexedId || `branch-${randomUUID()}`;
+    const name = readOnboardingText(submitted?.name, 120);
+    const city = readOnboardingText(submitted?.city, 120);
+    const manager = readOnboardingText(submitted?.manager, 160);
+    const status = ONBOARDING_BRANCH_STATUSES.has(submitted?.status)
+      ? submitted.status
+      : 'Active';
+
+    if (!name) {
+      throw new Error(`Branch ${index + 1} needs a name before submitting the application.`);
+    }
+
+    usedBranchIds.add(id);
+    if (submittedId && !submittedBranchIds.has(submittedId)) {
+      submittedBranchIds.set(submittedId, id);
+    }
+
+    return {
+      id,
+      name,
+      city,
+      manager,
+      status,
+    };
+  });
+  const validBranchIds = new Set(branches.map((branch) => branch.id));
+  const firstBranchId = branches[0].id;
+  const submittedActor = actorId && Array.isArray(incoming?.staffUsers)
+    ? incoming.staffUsers.find((user) => user.id === actorId)
+    : undefined;
+  const resolveSubmittedBranchId = (branchId: string | undefined) => {
+    const resolved = branchId ? submittedBranchIds.get(branchId) || branchId : '';
+    return validBranchIds.has(resolved) ? resolved : firstBranchId;
+  };
+
+  return {
+    ...current,
+    branches,
+    organizationProfile: {
+      ...current.organizationProfile,
+      name: organizationName,
+      legalName,
+    },
+    staffUsers: current.staffUsers.map((user) => {
+      if (user.id !== actorId) {
+        const branchId = validBranchIds.has(user.branchId) ? user.branchId : firstBranchId;
+        const defaultBranchId = user.defaultBranchId && validBranchIds.has(user.defaultBranchId)
+          ? user.defaultBranchId
+          : branchId;
+
+        return { ...user, branchId, defaultBranchId };
+      }
+
+      const branchId = resolveSubmittedBranchId(submittedActor?.branchId);
+      const defaultBranchId = resolveSubmittedBranchId(submittedActor?.defaultBranchId || branchId);
+
+      return { ...user, branchId, defaultBranchId };
+    }),
+  };
+}
 
 /**
  * Which slices each section unlocks. Deliberately overlapping: billing needs
@@ -189,8 +355,18 @@ export function scopeClinicStateForAccess(
   access: WorkspaceAccess,
   actorId?: string
 ): ClinicWorkspaceState {
+  // Platform roles are stripped for every caller, admin included. The write path
+  // keeps new ones out, but workspaces stored by older builds still carry a
+  // `super_admin` row; withholding it on read means no client has to know to filter
+  // it, and a clinic admin cannot be shown platform grants to edit.
+  const withoutPlatformRoles = {
+    ...state,
+    roles: dropPlatformRoles(state.roles),
+    rolePermissions: dropPlatformRoles(state.rolePermissions),
+  };
+
   if (access.canManageClinic) {
-    return state;
+    return withoutPlatformRoles;
   }
 
   const slices = readableSlices(access);
@@ -202,7 +378,7 @@ export function scopeClinicStateForAccess(
   const showClinicMoney = access.canViewClinicFinances;
 
   return {
-    ...state,
+    ...withoutPlatformRoles,
     patients: keep('patients', state.patients).map((patient) => (
       showPatientMoney ? patient : { ...patient, balance: 0 }
     )),
@@ -419,6 +595,92 @@ export function clampStaffRoles(
   });
 }
 
+function secureClinicAdminBranches(
+  incoming: ClinicWorkspaceState['branches'],
+  current: ClinicWorkspaceState['branches'],
+) {
+  const storedBranchIds = new Set(current.map((branch) => branch.id));
+  const usedBranchIds = new Set<string>();
+  const submittedBranchIds = new Map<string, string>();
+  const branches = incoming.map((branch) => {
+    const submittedId = typeof branch.id === 'string' ? branch.id.trim() : '';
+    const mayKeepId = Boolean(
+      submittedId
+      && storedBranchIds.has(submittedId)
+      && !usedBranchIds.has(submittedId),
+    );
+    const id = mayKeepId ? submittedId : `branch-${randomUUID()}`;
+
+    usedBranchIds.add(id);
+    if (submittedId && !submittedBranchIds.has(submittedId)) {
+      submittedBranchIds.set(submittedId, id);
+    }
+
+    return { ...branch, id };
+  });
+  const validBranchIds = new Set(branches.map((branch) => branch.id));
+  const fallbackBranchId = branches[0]?.id || '';
+  const resolveBranchId = (branchId: string | undefined) => {
+    const submittedId = typeof branchId === 'string' ? branchId.trim() : '';
+    const resolved = submittedBranchIds.get(submittedId) || submittedId;
+    return validBranchIds.has(resolved) ? resolved : fallbackBranchId;
+  };
+
+  return { branches, resolveBranchId };
+}
+
+/**
+ * Clinic staff accounts are provisioned by the invitation service. A workspace
+ * PUT may update or remove members already stored in this clinic, but it may not
+ * introduce an arbitrary ID/email and thereby move another clinic's user.
+ */
+function secureClinicAdminStaffUsers({
+  actorId,
+  current,
+  incoming,
+  resolveBranchId,
+}: {
+  actorId?: string;
+  current: ClinicWorkspaceState['staffUsers'];
+  incoming: ClinicWorkspaceState['staffUsers'];
+  resolveBranchId: (branchId: string | undefined) => string;
+}) {
+  const submittedById = new Map(incoming.map((user) => [user.id, user]));
+
+  return current.flatMap((storedUser) => {
+    const submitted = submittedById.get(storedUser.id);
+
+    // Keep the caller's own account even if a stale or crafted snapshot omits it.
+    if (!submitted) {
+      return storedUser.id === actorId ? [storedUser] : [];
+    }
+
+    const [roleClamped] = clampStaffRoles([{
+      ...submitted,
+      id: storedUser.id,
+      email: storedUser.email,
+      branchId: resolveBranchId(submitted.branchId),
+      defaultBranchId: resolveBranchId(submitted.defaultBranchId || submitted.branchId),
+    }], current);
+
+    return roleClamped ? [roleClamped] : [storedUser];
+  });
+}
+
+/**
+ * Drops the platform roles from a clinic's role catalog and grant list.
+ *
+ * `super_admin` and `platform_admin` administer the platform across every clinic;
+ * they are not roles a clinic staffs or configures. {@link clampStaffRoles} already
+ * stops one being written onto a *person*, but the grant list was a second route to
+ * the same place: a stored `super_admin` row rendered an editable Super Admin column
+ * in the clinic's own Roles & access screen. Their access never comes from a clinic
+ * workspace, so a row here can only mislead — dropping it loses nothing.
+ */
+export function dropPlatformRoles<T extends { role: string }>(entries: T[]): T[] {
+  return entries.filter((entry) => !isPlatformOnlyRole(entry.role));
+}
+
 /**
  * The state to actually persist for a PUT from this caller.
  *
@@ -438,13 +700,38 @@ export function mergeClinicStateForAccess({
   incoming: ClinicWorkspaceState;
 }): ClinicWorkspaceState {
   if (access.canManageClinic) {
+    const submittedBranches = Array.isArray(incoming.branches)
+      ? incoming.branches
+      : current.branches;
+    const { branches, resolveBranchId } = secureClinicAdminBranches(
+      submittedBranches,
+      current.branches,
+    );
+    const submittedStaffUsers = Array.isArray(incoming.staffUsers)
+      ? incoming.staffUsers
+      : current.staffUsers;
     // A clinic admin may rewrite the whole workspace — except that they may not
-    // promote anyone into a platform role, which is not theirs to give.
+    // promote anyone into a platform role, which is not theirs to give, nor keep a
+    // platform role in their own catalog or grant list.
     return {
       ...incoming,
-      staffUsers: Array.isArray(incoming.staffUsers)
-        ? clampStaffRoles(incoming.staffUsers, current.staffUsers)
-        : current.staffUsers,
+      patientProfiles: Array.isArray(incoming.patientProfiles)
+        ? incoming.patientProfiles.map((profile) => ({
+            ...profile,
+            branchId: resolveBranchId(profile.branchId),
+          }))
+        : current.patientProfiles,
+      staffUsers: secureClinicAdminStaffUsers({
+        actorId,
+        current: current.staffUsers,
+        incoming: submittedStaffUsers,
+        resolveBranchId,
+      }),
+      branches,
+      roles: Array.isArray(incoming.roles) ? dropPlatformRoles(incoming.roles) : current.roles,
+      rolePermissions: Array.isArray(incoming.rolePermissions)
+        ? dropPlatformRoles(incoming.rolePermissions)
+        : current.rolePermissions,
     };
   }
 
