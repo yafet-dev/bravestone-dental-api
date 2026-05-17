@@ -132,6 +132,14 @@ export async function syncSessionUser(input: SyncSessionUserInput) {
           status: 'active',
         },
       });
+  const organizationStatus = targetOrganizationId
+    ? (
+        await prisma.organization.findUnique({
+          where: { id: targetOrganizationId },
+          select: { status: true },
+        })
+      )?.status || null
+    : null;
 
   return {
     authUserId: syncedUser.authUserId,
@@ -139,6 +147,7 @@ export async function syncSessionUser(input: SyncSessionUserInput) {
     fullName: syncedUser.fullName,
     id: syncedUser.id,
     organizationId: syncedUser.organizationId,
+    organizationStatus,
     role: syncedUser.role,
     status: syncedUser.status,
   };
