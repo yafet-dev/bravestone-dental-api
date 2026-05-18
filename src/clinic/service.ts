@@ -65,6 +65,10 @@ const defaultPreferences: ClinicUserPreferences = {
   theme: 'Calm green',
 };
 
+function defaultOrganizationStatusForScope(organizationId: string) {
+  return organizationId === clinicOrganizationId ? 'active' : 'trial';
+}
+
 type ClinicWorkspaceScope = {
   organizationId: string;
   workspaceId: string;
@@ -671,6 +675,27 @@ function formatCurrency(amount: number) {
 function toTimestamp(value: string) {
   const parsed = new Date(value);
   return Number.isNaN(parsed.getTime()) ? 0 : parsed.getTime();
+}
+
+function getLocalDateKey(date = new Date()) {
+  return [
+    date.getFullYear(),
+    String(date.getMonth() + 1).padStart(2, '0'),
+    String(date.getDate()).padStart(2, '0'),
+  ].join('-');
+}
+
+function getCollectedRevenue(state: ClinicWorkspaceState) {
+  const patientPaymentRevenue = state.patientPayments.reduce((sum, payment) => sum + payment.amount, 0);
+  const receivedFinanceRevenue = state.financeEntries.reduce((sum, entry) => {
+    if (entry.type !== 'income' || entry.status !== 'Received') {
+      return sum;
+    }
+
+    return sum + entry.amount;
+  }, 0);
+
+  return patientPaymentRevenue + receivedFinanceRevenue;
 }
 
 function formatLastActive(lastActiveAt: Date | null | undefined, status: string) {
@@ -1304,9 +1329,7 @@ function buildClinicAssistantContent(state: ClinicWorkspaceState, message: strin
   }
 
   if (query.includes('revenue') || query.includes('income') || query.includes('billing') || query.includes('balance')) {
-    const collectedIncome = state.financeEntries
-      .filter((entry) => entry.type === 'income' && entry.status === 'Received')
-      .reduce((sum, entry) => sum + entry.amount, 0);
+    const collectedIncome = getCollectedRevenue(state);
     const outstandingBalance = state.patients.reduce((sum, patient) => sum + patient.balance, 0);
     const unpaidInvoices = state.invoices.filter((invoice) => invoice.status !== 'paid').length;
 
@@ -1402,11 +1425,11 @@ function countPatientsByBranch(state: ClinicWorkspaceState) {
 }
 
 function computeDashboardMetrics(state: ClinicWorkspaceState) {
-  const today = new Date().toISOString().slice(0, 10);
+  const today = getLocalDateKey();
 
   return {
     appointmentsToday: state.appointments.filter((appointment) => appointment.date === today).length,
-    monthlyRevenue: state.revenueData.reduce((sum, point) => sum + point.revenue, 0),
+    monthlyRevenue: getCollectedRevenue(state),
     pendingForms: state.forms.filter((form) => form.status !== 'Signed').length,
   };
 }
@@ -1589,7 +1612,7 @@ export async function replaceClinicState(state: ClinicWorkspaceState, organizati
           ? toJsonValue(nextState.organizationProfile.doctorProfileNotifications)
           : Prisma.DbNull,
         planId: defaultPlan.id,
-        status: 'active',
+        status: defaultOrganizationStatusForScope(targetOrganizationId),
         paymentStatus: 'paid',
         dueDate,
         aiResetDate: dueDate,
