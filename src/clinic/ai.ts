@@ -53,6 +53,27 @@ function toTimestamp(value: string) {
   return Number.isNaN(parsed.getTime()) ? 0 : parsed.getTime();
 }
 
+function getLocalDateKey(date = new Date()) {
+  return [
+    date.getFullYear(),
+    String(date.getMonth() + 1).padStart(2, '0'),
+    String(date.getDate()).padStart(2, '0'),
+  ].join('-');
+}
+
+function getCollectedRevenueSnapshot(state: ClinicWorkspaceState) {
+  const receivedFinanceEntries = state.financeEntries.filter((entry) => (
+    entry.type === 'income' && entry.status === 'Received'
+  ));
+  const patientPaymentRevenue = state.patientPayments.reduce((sum, payment) => sum + payment.amount, 0);
+  const receivedFinanceRevenue = receivedFinanceEntries.reduce((sum, entry) => sum + entry.amount, 0);
+
+  return {
+    collectedRevenueEntryCount: state.patientPayments.length + receivedFinanceEntries.length,
+    totalCollectedRevenue: patientPaymentRevenue + receivedFinanceRevenue,
+  };
+}
+
 function clipText(value: string, maxLength: number) {
   const normalized = value.replace(/\s+/g, ' ').trim();
 
@@ -208,7 +229,7 @@ function buildClinicMetrics(state: ClinicWorkspaceState) {
   const totalExpensePool = state.financeEntries
     .filter((entry) => entry.type === 'expense')
     .reduce((sum, entry) => sum + entry.amount, 0);
-  const totalCollectedRevenue = state.patientPayments.reduce((sum, payment) => sum + payment.amount, 0);
+  const { collectedRevenueEntryCount, totalCollectedRevenue } = getCollectedRevenueSnapshot(state);
   const totalBranchPatients = Math.max(state.patientProfiles.length, 1);
   const branchPerformanceData: ClinicBranchPerformance[] = activeBranches.map((branch) => {
     const branchProfiles = state.patientProfiles.filter((profile) => profile.branchId === branch.id);
@@ -289,7 +310,7 @@ function buildClinicMetrics(state: ClinicWorkspaceState) {
   const sortedAppointments = [...state.appointments].sort((left, right) => (
     left.date.localeCompare(right.date) || left.time.localeCompare(right.time)
   ));
-  const today = new Date().toISOString().slice(0, 10);
+  const today = getLocalDateKey();
   const appointmentsToday = sortedAppointments.filter((appointment) => appointment.date === today);
   const nextAppointmentDate = sortedAppointments.find((appointment) => appointment.date >= today)?.date || '';
   const openForms = state.forms.filter((form) => form.status !== 'Signed');
@@ -313,6 +334,7 @@ function buildClinicMetrics(state: ClinicWorkspaceState) {
     appointmentsToday,
     availableDoctors,
     bestBranch,
+    collectedRevenueEntryCount,
     growthBranch,
     nextAppointmentDate,
     netMargin,
@@ -406,8 +428,8 @@ export function buildClinicFallbackReportInsights(state: ClinicWorkspaceState): 
     buildInsightCard(
       'Collected Revenue',
       formatCurrency(metrics.totalCollectedRevenue),
-      state.patientPayments.length
-        ? `${state.patientPayments.length} payment entries recorded`
+      metrics.collectedRevenueEntryCount
+        ? `${metrics.collectedRevenueEntryCount} revenue entr${metrics.collectedRevenueEntryCount === 1 ? 'y' : 'ies'} recorded`
         : 'Payments recorded here will sharpen the financial picture',
       metrics.totalCollectedRevenue > 0 ? 'success' : 'brand'
     ),
@@ -454,7 +476,7 @@ export function buildClinicFallbackReportInsights(state: ClinicWorkspaceState): 
     buildInsightCard(
       'Gross Revenue',
       formatCurrency(metrics.totalCollectedRevenue),
-      'Rolling income captured from patient payments',
+      'Rolling income captured from patient payments and finance entries',
       metrics.totalCollectedRevenue > 0 ? 'success' : 'brand'
     ),
     buildInsightCard(
