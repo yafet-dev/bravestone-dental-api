@@ -38,9 +38,9 @@ function normalizePhone(phone: string | null | undefined) {
   return normalized;
 }
 
-const legacySeedClinicRole = 'Clinic Team';
+const legacySeedClinicRole = 'clinic_team';
 const genericClinicOrganizationName = 'Your clinic';
-const genericClinicRole = 'Clinic staff';
+const genericClinicRole = 'clinic_staff';
 
 export async function syncSessionUser(input: SyncSessionUserInput) {
   const email = input.email.trim().toLowerCase();
@@ -86,10 +86,10 @@ export async function syncSessionUser(input: SyncSessionUserInput) {
     && targetOrganizationId !== clinicOrganizationId
   );
   const preferredClinicRole = input.isAdmin
-    ? 'Platform Admin'
+    ? 'platform_admin'
     : targetOrganizationId === clinicOrganizationId
       ? genericClinicRole
-      : 'Clinic Admin';
+      : 'clinic_admin';
   const resolvedRole = existingUser?.role && (!needsPersonalClinicWorkspace || existingUser.role !== legacySeedClinicRole)
     ? existingUser.role
     : preferredClinicRole;
