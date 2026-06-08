@@ -49,14 +49,14 @@ const sidebarFeatureOptions = [
 ];
 
 const defaultFeaturesForRole = (role: string) => {
-  if (role === 'Super Admin') return sidebarFeatureOptions;
-  if (role === 'Clinic Admin') return ['Dashboard', 'Patients', 'Appointments', 'Doctors', 'Reports', 'Organization', 'Settings'];
-  if (role === 'Dentist') return ['Patients', 'Appointments', 'Dental Charting', 'Prescriptions', 'Sick Leave'];
-  if (role === 'Receptionist') return ['Dashboard', 'Patients', 'Appointments', 'Sick Leave'];
-  if (role === 'Cashier') return ['Billing', 'Finance'];
-  if (role === 'Prescription Assistant' || role === 'Pharmacist') return ['Prescriptions', 'Patients'];
-  if (role === 'Accountant') return ['Finance', 'Billing', 'Reports'];
-  if (role === 'Nurse / Assistant') return ['Patients', 'Appointments', 'Sick Leave', 'Dental Charting'];
+  if (role === 'super_admin') return sidebarFeatureOptions;
+  if (role === 'clinic_admin') return ['Dashboard', 'Patients', 'Appointments', 'Doctors', 'Reports', 'Organization', 'Settings'];
+  if (role === 'dentist') return ['Patients', 'Appointments', 'Dental Charting', 'Prescriptions', 'Sick Leave'];
+  if (role === 'receptionist') return ['Dashboard', 'Patients', 'Appointments', 'Sick Leave'];
+  if (role === 'cashier') return ['Billing', 'Finance'];
+  if (role === 'prescription_assistant' || role === 'pharmacist') return ['Prescriptions', 'Patients'];
+  if (role === 'accountant') return ['Finance', 'Billing', 'Reports'];
+  if (role === 'nurse_assistant') return ['Patients', 'Appointments', 'Sick Leave', 'Dental Charting'];
   return ['Dashboard'];
 };
 
@@ -394,31 +394,31 @@ export const clinicSeedState: ClinicWorkspaceState = {
     { id: 'RPT-05', name: 'Procedure Mix Report', type: 'Clinical', range: 'This month', format: 'PDF / CSV' },
   ],
   staffUsers: [
-    { id: 'u1', name: 'Amara Wells', email: 'amara@bravestonelabs.com', role: 'Clinic Admin', status: 'Active', lastActive: '8 min ago', branchId: 'main', phone: '+251 91 100 0001', defaultBranchId: 'main', emailSignature: 'Amara Wells\nClinic Admin\nBright Smile Dental Clinic', preferences: defaultClinicUserPreferences },
-    { id: 'u2', name: 'Dr. Julianne Kim', email: 'julianne@bravestonelabs.com', role: 'Dentist', status: 'Active', lastActive: 'Now', branchId: 'cmc', phone: '+251 91 100 0002', defaultBranchId: 'cmc', emailSignature: 'Dr. Julianne Kim\nDentist\nBright Smile Dental Clinic', preferences: defaultClinicUserPreferences },
-    { id: 'u3', name: 'Maya Patel', email: 'maya@bravestonelabs.com', role: 'Cashier', status: 'Active', lastActive: '18 min ago', branchId: 'kazanchis', phone: '+251 91 100 0003', defaultBranchId: 'kazanchis', emailSignature: 'Maya Patel\nCashier\nBright Smile Dental Clinic', preferences: defaultClinicUserPreferences },
-    { id: 'u4', name: 'Noah Reed', email: 'noah@bravestonelabs.com', role: 'Pharmacist', status: 'Active', lastActive: '1 hour ago', branchId: 'bole', phone: '+251 91 100 0004', defaultBranchId: 'bole', emailSignature: 'Noah Reed\nPharmacist\nBright Smile Dental Clinic', preferences: defaultClinicUserPreferences },
-    { id: 'u5', name: 'Lena Brooks', email: 'lena@bravestonelabs.com', role: 'Nurse / Assistant', status: 'Invited', lastActive: 'Pending', branchId: 'main', phone: '+251 91 100 0005', defaultBranchId: 'main', emailSignature: 'Lena Brooks\nNurse / Assistant\nBright Smile Dental Clinic', preferences: defaultClinicUserPreferences },
+    { id: 'u1', name: 'Amara Wells', email: 'amara@bravestonelabs.com', role: 'clinic_admin', status: 'Active', lastActive: '8 min ago', branchId: 'main', phone: '+251 91 100 0001', defaultBranchId: 'main', emailSignature: 'Amara Wells\nClinic Admin\nBright Smile Dental Clinic', preferences: defaultClinicUserPreferences },
+    { id: 'u2', name: 'Dr. Julianne Kim', email: 'julianne@bravestonelabs.com', role: 'dentist', status: 'Active', lastActive: 'Now', branchId: 'cmc', phone: '+251 91 100 0002', defaultBranchId: 'cmc', emailSignature: 'Dr. Julianne Kim\nDentist\nBright Smile Dental Clinic', preferences: defaultClinicUserPreferences },
+    { id: 'u3', name: 'Maya Patel', email: 'maya@bravestonelabs.com', role: 'cashier', status: 'Active', lastActive: '18 min ago', branchId: 'kazanchis', phone: '+251 91 100 0003', defaultBranchId: 'kazanchis', emailSignature: 'Maya Patel\nCashier\nBright Smile Dental Clinic', preferences: defaultClinicUserPreferences },
+    { id: 'u4', name: 'Noah Reed', email: 'noah@bravestonelabs.com', role: 'pharmacist', status: 'Active', lastActive: '1 hour ago', branchId: 'bole', phone: '+251 91 100 0004', defaultBranchId: 'bole', emailSignature: 'Noah Reed\nPharmacist\nBright Smile Dental Clinic', preferences: defaultClinicUserPreferences },
+    { id: 'u5', name: 'Lena Brooks', email: 'lena@bravestonelabs.com', role: 'nurse_assistant', status: 'Invited', lastActive: 'Pending', branchId: 'main', phone: '+251 91 100 0005', defaultBranchId: 'main', emailSignature: 'Lena Brooks\nNurse / Assistant\nBright Smile Dental Clinic', preferences: defaultClinicUserPreferences },
   ],
   roles: [
-    { role: 'Super Admin', access: 'All modules, organization, billing, reports, settings' },
-    { role: 'Clinic Admin', access: 'Dashboard, patients, appointments, reports, organization' },
-    { role: 'Dentist', access: 'Patients, dental charting, procedures, prescriptions' },
-    { role: 'Receptionist', access: 'Patients, appointments, forms, reminders' },
-    { role: 'Cashier', access: 'Billing, payments, invoices' },
-    { role: 'Prescription Assistant', access: 'Patient prescriptions and care instructions' },
-    { role: 'Accountant', access: 'Billing reports and payment history' },
-    { role: 'Nurse / Assistant', access: 'Symptoms, forms, appointments, care notes' },
+    { role: 'super_admin', access: 'All modules, organization, billing, reports, settings' },
+    { role: 'clinic_admin', access: 'Dashboard, patients, appointments, reports, organization' },
+    { role: 'dentist', access: 'Patients, dental charting, procedures, prescriptions' },
+    { role: 'receptionist', access: 'Patients, appointments, forms, reminders' },
+    { role: 'cashier', access: 'Billing, payments, invoices' },
+    { role: 'prescription_assistant', access: 'Patient prescriptions and care instructions' },
+    { role: 'accountant', access: 'Billing reports and payment history' },
+    { role: 'nurse_assistant', access: 'Symptoms, forms, appointments, care notes' },
   ],
   rolePermissions: [
-    { role: 'Super Admin', features: defaultFeaturesForRole('Super Admin') },
-    { role: 'Clinic Admin', features: defaultFeaturesForRole('Clinic Admin') },
-    { role: 'Dentist', features: defaultFeaturesForRole('Dentist') },
-    { role: 'Receptionist', features: defaultFeaturesForRole('Receptionist') },
-    { role: 'Cashier', features: defaultFeaturesForRole('Cashier') },
-    { role: 'Prescription Assistant', features: defaultFeaturesForRole('Prescription Assistant') },
-    { role: 'Accountant', features: defaultFeaturesForRole('Accountant') },
-    { role: 'Nurse / Assistant', features: defaultFeaturesForRole('Nurse / Assistant') },
+    { role: 'super_admin', features: defaultFeaturesForRole('super_admin') },
+    { role: 'clinic_admin', features: defaultFeaturesForRole('clinic_admin') },
+    { role: 'dentist', features: defaultFeaturesForRole('dentist') },
+    { role: 'receptionist', features: defaultFeaturesForRole('receptionist') },
+    { role: 'cashier', features: defaultFeaturesForRole('cashier') },
+    { role: 'prescription_assistant', features: defaultFeaturesForRole('prescription_assistant') },
+    { role: 'accountant', features: defaultFeaturesForRole('accountant') },
+    { role: 'nurse_assistant', features: defaultFeaturesForRole('nurse_assistant') },
   ],
   branches: clinicBranches,
   organizationProfile: {
