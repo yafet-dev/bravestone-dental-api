@@ -1,0 +1,442 @@
+import type { ClinicWorkspaceState } from './types';
+
+const doctorWeekdays = [
+  { key: 'mon', label: 'Monday', shortLabel: 'Mon' },
+  { key: 'tue', label: 'Tuesday', shortLabel: 'Tue' },
+  { key: 'wed', label: 'Wednesday', shortLabel: 'Wed' },
+  { key: 'thu', label: 'Thursday', shortLabel: 'Thu' },
+  { key: 'fri', label: 'Friday', shortLabel: 'Fri' },
+  { key: 'sat', label: 'Saturday', shortLabel: 'Sat' },
+  { key: 'sun', label: 'Sunday', shortLabel: 'Sun' },
+] as const;
+
+const defaultDoctorStartTime = '09:00';
+const defaultDoctorEndTime = '17:00';
+
+const createDoctorAvailabilityWeek = (
+  overrides: Partial<Record<(typeof doctorWeekdays)[number]['key'], Partial<ClinicWorkspaceState['doctors'][number]['weeklyAvailability'][number]>>> = {}
+): ClinicWorkspaceState['doctors'][number]['weeklyAvailability'] => (
+  doctorWeekdays.map((day) => ({
+    ...day,
+    enabled: !['sat', 'sun'].includes(day.key),
+    start: defaultDoctorStartTime,
+    end: defaultDoctorEndTime,
+    ...overrides[day.key],
+  }))
+);
+
+const clinicBranches: ClinicWorkspaceState['branches'] = [
+  { id: 'main', name: 'Main Branch', city: 'Addis Ababa', manager: 'Amara Wells', status: 'Active' },
+  { id: 'cmc', name: 'CMC Branch', city: 'Addis Ababa', manager: 'Dr. Julianne Kim', status: 'Active' },
+  { id: 'kazanchis', name: 'Kazanchis Branch', city: 'Addis Ababa', manager: 'Maya Patel', status: 'Opening soon' },
+  { id: 'bole', name: 'Bole Branch', city: 'Addis Ababa', manager: 'Noah Reed', status: 'Active' },
+];
+
+const sidebarFeatureOptions = [
+  'Dashboard',
+  'Patients',
+  'Appointments',
+  'Doctors',
+  'Dental Charting',
+  'Prescriptions',
+  'Sick Leave',
+  'Finance',
+  'Billing',
+  'Reports',
+  'AI Assistant',
+  'Organization',
+  'Settings',
+];
+
+const defaultFeaturesForRole = (role: string) => {
+  if (role === 'Super Admin') return sidebarFeatureOptions;
+  if (role === 'Clinic Admin') return ['Dashboard', 'Patients', 'Appointments', 'Doctors', 'Reports', 'Organization', 'Settings'];
+  if (role === 'Dentist') return ['Patients', 'Appointments', 'Dental Charting', 'Prescriptions', 'Sick Leave'];
+  if (role === 'Receptionist') return ['Dashboard', 'Patients', 'Appointments', 'Sick Leave'];
+  if (role === 'Cashier') return ['Billing', 'Finance'];
+  if (role === 'Prescription Assistant' || role === 'Pharmacist') return ['Prescriptions', 'Patients'];
+  if (role === 'Accountant') return ['Finance', 'Billing', 'Reports'];
+  if (role === 'Nurse / Assistant') return ['Patients', 'Appointments', 'Sick Leave', 'Dental Charting'];
+  return ['Dashboard'];
+};
+
+const defaultClinicUserPreferences = {
+  appointmentReminders: true,
+  billingAlerts: true,
+  recordReviewAlerts: false,
+  weeklySummary: true,
+  twoFactor: true,
+  compactMode: false,
+  defaultLandingPage: 'Dashboard overview',
+  calendarView: 'Week view',
+  timeZone: 'Africa/Nairobi',
+  theme: 'Calm green',
+};
+
+const assistantWelcomeMessage = {
+  id: 'assistant-welcome',
+  role: 'assistant' as const,
+  content: 'Hi, ask me about your clinic. I can summarize patients, doctors, billing, and follow-ups.',
+  timestamp: '2026-06-01T08:00:00.000Z',
+};
+
+export const clinicSeedState: ClinicWorkspaceState = {
+  patients: [
+    {
+      id: 'p1',
+      name: 'Eleanor Fant',
+      age: 34,
+      gender: 'female',
+      phone: '+1 (555) 123-4567',
+      email: 'eleanor.fant@example.com',
+      lastVisit: '2026-04-15',
+      status: 'active',
+      balance: 13000,
+      medicalHistory: ['Penicillin Allergy', 'Heart condition'],
+      dentalChart: [
+        { toothId: 1, status: 'healthy', notes: '' },
+        { toothId: 14, status: 'filled', notes: 'Composite restoration' },
+        { toothId: 18, status: 'decayed', notes: 'Early stage caries' },
+      ],
+      notes: [
+        {
+          id: 'NOTE-1',
+          date: '2026-04-15T10:30:00.000Z',
+          note: 'Morning visits preferred. Follow up on Tooth #18.',
+          user: 'Reception',
+        },
+      ],
+      emergencyContacts: [
+        {
+          id: 'EC-1',
+          name: 'Mara Fant',
+          relationship: 'Spouse',
+          phone: '+1 (555) 222-0191',
+          note: 'Primary emergency contact',
+        },
+      ],
+    },
+    {
+      id: 'p2',
+      name: 'Marcus Holloway',
+      age: 28,
+      gender: 'male',
+      phone: '+1 (555) 987-6543',
+      email: 'marcus.h@example.com',
+      lastVisit: '2026-03-22',
+      status: 'active',
+      balance: 0,
+      medicalHistory: [],
+      dentalChart: [],
+      notes: [],
+      emergencyContacts: [],
+    },
+    {
+      id: 'p3',
+      name: 'Sarah Chen',
+      age: 42,
+      gender: 'female',
+      phone: '+1 (555) 444-5555',
+      email: 's.chen@example.com',
+      lastVisit: '2026-04-29',
+      status: 'active',
+      balance: 21000,
+      medicalHistory: ['Asthma'],
+      dentalChart: [],
+      notes: [
+        {
+          id: 'NOTE-2',
+          date: '2026-04-29T15:10:00.000Z',
+          note: 'Patient asked for a written post-op summary before the next visit.',
+          user: 'Nurse / Assistant',
+        },
+      ],
+      emergencyContacts: [
+        {
+          id: 'EC-2',
+          name: 'David Chen',
+          relationship: 'Brother',
+          phone: '+1 (555) 311-0294',
+          note: 'Available after 5 PM',
+        },
+      ],
+    },
+  ],
+  patientProfiles: [
+    {
+      patientId: 'p1',
+      directoryId: 'PAT-P1',
+      dob: '1991-05-24',
+      address: '124 Park Avenue, New York, NY',
+      branchId: 'main',
+      branchName: 'Main Branch',
+      bloodGroup: 'O+',
+      nextAppointment: '2026-05-06',
+      paymentPlan: {
+        treatment: 'Brace treatment plan',
+        total: 20000,
+        paid: 7000,
+        firstPayment: 5000,
+        lastPaymentDate: '2026-04-16',
+        method: 'Mobile transfer',
+      },
+      pendingAmount: 13000,
+      recordCount: 12,
+      cardNumber: 'BS-ETH-0241',
+      registrationTime: '2026-03-12T14:15:00',
+    },
+    {
+      patientId: 'p2',
+      directoryId: 'PAT-P2',
+      dob: '1998-11-12',
+      address: '89 Broadway, Manhattan, NY',
+      branchId: 'bole',
+      branchName: 'Bole Branch',
+      bloodGroup: 'A-',
+      nextAppointment: '2026-05-08',
+      paymentPlan: {
+        treatment: 'Scaling and polishing',
+        total: 4500,
+        paid: 4500,
+        firstPayment: 4500,
+        lastPaymentDate: '2026-04-14',
+        method: 'Cash',
+      },
+      pendingAmount: 0,
+      recordCount: 6,
+      cardNumber: 'BS-ETH-0242',
+      registrationTime: '2026-04-14T09:20:00',
+    },
+    {
+      patientId: 'p3',
+      directoryId: 'PAT-P3',
+      dob: '1984-03-30',
+      address: '45 Queens Blvd, Queens, NY',
+      branchId: 'cmc',
+      branchName: 'CMC Branch',
+      bloodGroup: 'B+',
+      paymentPlan: {
+        treatment: 'Orthodontic treatment deposit',
+        total: 32000,
+        paid: 11000,
+        firstPayment: 8000,
+        lastPaymentDate: '2026-05-01',
+        method: 'Cash',
+      },
+      pendingAmount: 21000,
+      recordCount: 9,
+      cardNumber: 'BS-ETH-0243',
+      registrationTime: '2026-04-29T11:40:00',
+    },
+  ],
+  patientPayments: [
+    { id: 'PAY-3001', patientId: 'p1', date: '2026-03-12T14:15:00.000Z', amount: 5000, method: 'Cash', receivedBy: 'Reception', note: 'First payment / registration deposit' },
+    { id: 'PAY-3044', patientId: 'p1', date: '2026-04-16T12:00:00.000Z', amount: 2000, method: 'Mobile transfer', receivedBy: 'Cashier', note: 'Follow-up payment' },
+    { id: 'PAY-3010', patientId: 'p2', date: '2026-04-14T09:20:00.000Z', amount: 4500, method: 'Cash', receivedBy: 'Reception', note: 'Paid in full' },
+    { id: 'PAY-3026', patientId: 'p3', date: '2026-04-29T11:40:00.000Z', amount: 8000, method: 'Bank transfer', receivedBy: 'Cashier', note: 'First payment' },
+    { id: 'PAY-3052', patientId: 'p3', date: '2026-05-01T10:30:00.000Z', amount: 3000, method: 'Cash', receivedBy: 'Reception', note: 'Second installment' },
+  ],
+  appointments: [
+    { id: 'a1', patientId: 'p1', patientName: 'Eleanor Fant', doctorId: 'd1', doctorName: 'Dr. Julianne Kim', date: '2026-05-01', time: '09:00', duration: 45, type: 'consultation', status: 'completed', reason: 'Consultation and chart review' },
+    { id: 'a2', patientId: 'p2', patientName: 'Marcus Holloway', doctorId: 'd1', doctorName: 'Dr. Julianne Kim', date: '2026-05-01', time: '11:30', duration: 30, type: 'cleaning', status: 'in-progress', reason: 'Cleaning and gingival assessment' },
+    { id: 'a3', patientId: 'p3', patientName: 'Sarah Chen', doctorId: 'd2', doctorName: 'Dr. Robert Aris', date: '2026-05-01', time: '14:00', duration: 60, type: 'surgery', status: 'scheduled', reason: 'Surgery preparation and consent' },
+  ],
+  revenueData: [
+    { name: 'Mon', revenue: 4200, patients: 12 },
+    { name: 'Tue', revenue: 3800, patients: 10 },
+    { name: 'Wed', revenue: 5100, patients: 15 },
+    { name: 'Thu', revenue: 4600, patients: 14 },
+    { name: 'Fri', revenue: 6200, patients: 18 },
+    { name: 'Sat', revenue: 2500, patients: 8 },
+  ],
+  doctors: [
+    {
+      id: 'd1',
+      name: 'Dr. Julianne Kim',
+      specialty: 'Cosmetic Dentistry',
+      schedule: 'Mon-Fri, 8:00 AM - 4:00 PM',
+      availability: 'Available',
+      assignedPatients: 342,
+      revenue: 24500,
+      procedures: 126,
+      rating: 98,
+      weeklyAvailability: createDoctorAvailabilityWeek({
+        mon: { enabled: true, start: '08:00', end: '16:00' },
+        tue: { enabled: true, start: '08:00', end: '16:00' },
+        wed: { enabled: true, start: '08:00', end: '16:00' },
+        thu: { enabled: true, start: '08:00', end: '16:00' },
+        fri: { enabled: true, start: '08:00', end: '16:00' },
+      }),
+    },
+    {
+      id: 'd2',
+      name: 'Dr. Robert Aris',
+      specialty: 'Oral Surgery',
+      schedule: 'Tue-Sat, 10:00 AM - 6:00 PM',
+      availability: 'In procedure',
+      assignedPatients: 281,
+      revenue: 18000,
+      procedures: 88,
+      rating: 96,
+      weeklyAvailability: createDoctorAvailabilityWeek({
+        mon: { enabled: false },
+        tue: { enabled: true, start: '10:00', end: '18:00' },
+        wed: { enabled: true, start: '10:00', end: '18:00' },
+        thu: { enabled: true, start: '10:00', end: '18:00' },
+        fri: { enabled: true, start: '10:00', end: '18:00' },
+        sat: { enabled: true, start: '10:00', end: '16:00' },
+      }),
+    },
+    {
+      id: 'd3',
+      name: 'Dr. Miriam Hall',
+      specialty: 'Orthodontics',
+      schedule: 'Mon/Wed/Fri, 9:00 AM - 5:00 PM',
+      availability: 'Available',
+      assignedPatients: 214,
+      revenue: 15400,
+      procedures: 67,
+      rating: 97,
+      weeklyAvailability: createDoctorAvailabilityWeek({
+        mon: { enabled: true, start: '09:00', end: '17:00' },
+        tue: { enabled: false },
+        wed: { enabled: true, start: '09:00', end: '17:00' },
+        thu: { enabled: false },
+        fri: { enabled: true, start: '09:00', end: '17:00' },
+      }),
+    },
+  ],
+  procedures: [
+    { id: 'pr1', name: 'Dental Consultation', category: 'Clinical', cost: 85, duration: '30 min', followUp: 'As needed', patient: 'Eleanor Fant', doctor: 'Dr. Julianne Kim' },
+    { id: 'pr2', name: 'Scaling and Polishing', category: 'Preventive', cost: 120, duration: '45 min', followUp: '6 months', patient: 'Marcus Holloway', doctor: 'Dr. Miriam Hall' },
+    { id: 'pr3', name: 'Composite Filling', category: 'Restorative', cost: 300, duration: '60 min', followUp: '14 days', patient: 'Eleanor Fant', doctor: 'Dr. Julianne Kim' },
+    { id: 'pr4', name: 'Root Canal Therapy', category: 'Endodontic', cost: 850, duration: '90 min', followUp: '7 days', patient: 'Sarah Chen', doctor: 'Dr. Robert Aris' },
+  ],
+  diagnoses: [
+    {
+      id: 'dx1',
+      patientId: 'p1',
+      doctorId: 'd1',
+      patient: 'Eleanor Fant',
+      tooth: '#18',
+      diagnosis: 'Early stage caries',
+      severity: 'Moderate',
+      date: '2026-04-15',
+      doctor: 'Dr. Julianne Kim',
+      complaint: 'Patient came in with cold sensitivity and food trapping around Tooth #18.',
+      doctorAction: 'Clinical exam completed and fluoride varnish applied.',
+      medicine: 'Ibuprofen 400mg as needed',
+      followUp: 'Return in 14 days for restoration review.',
+      attachments: ['xray-18-apr-15.png'],
+    },
+    {
+      id: 'dx2',
+      patientId: 'p2',
+      doctorId: 'd3',
+      patient: 'Marcus Holloway',
+      tooth: 'General',
+      diagnosis: 'Gingival inflammation',
+      severity: 'Mild',
+      date: '2026-04-18',
+      doctor: 'Dr. Miriam Hall',
+      complaint: 'Reported bleeding while brushing.',
+      doctorAction: 'Scaling completed and oral hygiene education provided.',
+      medicine: 'Chlorhexidine rinse',
+      followUp: 'Review gums in 6 weeks.',
+      attachments: [],
+    },
+    {
+      id: 'dx3',
+      patientId: 'p3',
+      doctorId: 'd2',
+      patient: 'Sarah Chen',
+      tooth: '#7',
+      diagnosis: 'Post-whitening sensitivity',
+      severity: 'Low',
+      date: '2026-04-29',
+      doctor: 'Dr. Robert Aris',
+      complaint: 'Sensitivity after whitening session.',
+      doctorAction: 'Sensitivity gel applied chairside.',
+      medicine: 'Desensitizing toothpaste',
+      followUp: 'Monitor for 7 days.',
+      attachments: [],
+    },
+  ],
+  symptoms: [
+    { id: 's1', patientId: 'p1', patient: 'Eleanor Fant', date: '2026-04-15', tooth: '#18', pain: 6, sensitivity: 'Cold', bleeding: 'No', swelling: 'No', infection: 'No', notes: 'Sharp sensitivity when drinking cold water.' },
+    { id: 's2', patientId: 'p2', patient: 'Marcus Holloway', date: '2026-04-18', tooth: 'General', pain: 3, sensitivity: 'None', bleeding: 'Yes', swelling: 'No', infection: 'No', notes: 'Bleeding while brushing.' },
+    { id: 's3', patientId: 'p3', patient: 'Sarah Chen', date: '2026-04-29', tooth: '#7', pain: 4, sensitivity: 'Hot and cold', bleeding: 'No', swelling: 'No', infection: 'No', notes: 'Sensitivity after whitening session.' },
+  ],
+  prescriptions: [
+    { id: 'RX-2041', patientId: 'p1', doctorId: 'd1', patient: 'Eleanor Fant', doctor: 'Dr. Julianne Kim', medicine: 'Amoxicillin 500mg', dosage: '1 capsule every 8 hours', duration: '5 days', status: 'Issued', date: '2026-04-15', instructions: '' },
+    { id: 'RX-2040', patientId: 'p2', doctorId: 'd3', patient: 'Marcus Holloway', doctor: 'Dr. Miriam Hall', medicine: 'Ibuprofen 400mg', dosage: '1 tablet after meals', duration: '3 days', status: 'Dispensed', date: '2026-04-14', instructions: '' },
+    { id: 'RX-2039', patientId: 'p3', doctorId: 'd2', patient: 'Sarah Chen', doctor: 'Dr. Robert Aris', medicine: 'Chlorhexidine rinse', dosage: 'Rinse twice daily', duration: '7 days', status: 'Ready', date: '2026-04-12', instructions: '' },
+  ],
+  invoices: [
+    { id: 'INV-1029', patientId: 'p1', billToName: 'Eleanor Fant', date: '2026-04-15', amount: 450, status: 'unpaid', items: [{ description: 'Composite restoration', quantity: 1, price: 300 }, { description: 'Consultation', quantity: 1, price: 150 }] },
+    { id: 'INV-1028', patientId: 'p2', billToName: 'Marcus Holloway', date: '2026-04-14', amount: 120, status: 'paid', items: [{ description: 'Cleaning and polish', quantity: 1, price: 120 }] },
+    { id: 'INV-1027', patientId: 'p3', billToName: 'Sarah Chen', date: '2026-04-12', amount: 3200, status: 'partial', items: [{ description: 'Orthodontic treatment deposit', quantity: 1, price: 3200 }] },
+  ],
+  forms: [
+    { id: 'FORM-12', patientId: 'p1', patient: 'Eleanor Fant', type: 'Treatment Consent', status: 'Signed', owner: 'Dr. Julianne Kim', updated: '2026-04-15' },
+    { id: 'FORM-11', patientId: 'p3', patient: 'Sarah Chen', type: 'Medical Declaration', status: 'Review', owner: 'Reception', updated: '2026-04-29' },
+    { id: 'FORM-10', patientId: 'p2', patient: 'Marcus Holloway', type: 'Post-op Instructions', status: 'Sent', owner: 'Nurse / Assistant', updated: '2026-04-14' },
+  ],
+  sickLeaves: [
+    { id: 'SL-308', patientId: 'p1', doctorId: 'd1', patient: 'Eleanor Fant', doctor: 'Dr. Julianne Kim', diagnosis: 'Post restorative procedure recovery', start: '2026-04-15', end: '2026-04-16', status: 'Printed' },
+    { id: 'SL-307', patientId: 'p3', doctorId: 'd2', patient: 'Sarah Chen', doctor: 'Dr. Robert Aris', diagnosis: 'Surgical consultation recovery', start: '2026-04-29', end: '2026-05-01', status: 'Draft' },
+  ],
+  reports: [
+    { id: 'RPT-01', name: 'Patient Growth Report', type: 'Patients', range: 'Last 30 days', format: 'PDF / CSV' },
+    { id: 'RPT-02', name: 'Revenue and Expense Report', type: 'Financial', range: 'This month', format: 'PDF / CSV' },
+    { id: 'RPT-03', name: 'Doctor Performance Summary', type: 'Doctors', range: 'Quarter to date', format: 'PDF / CSV' },
+    { id: 'RPT-04', name: 'Open Clinical Records Report', type: 'Clinical', range: 'Next 60 days', format: 'PDF / CSV' },
+    { id: 'RPT-05', name: 'Procedure Mix Report', type: 'Clinical', range: 'This month', format: 'PDF / CSV' },
+  ],
+  staffUsers: [
+    { id: 'u1', name: 'Amara Wells', email: 'amara@bravestonelabs.com', role: 'Clinic Admin', status: 'Active', lastActive: '8 min ago', branchId: 'main', phone: '+251 91 100 0001', defaultBranchId: 'main', emailSignature: 'Amara Wells\nClinic Admin\nBright Smile Dental Clinic', preferences: defaultClinicUserPreferences },
+    { id: 'u2', name: 'Dr. Julianne Kim', email: 'julianne@bravestonelabs.com', role: 'Dentist', status: 'Active', lastActive: 'Now', branchId: 'cmc', phone: '+251 91 100 0002', defaultBranchId: 'cmc', emailSignature: 'Dr. Julianne Kim\nDentist\nBright Smile Dental Clinic', preferences: defaultClinicUserPreferences },
+    { id: 'u3', name: 'Maya Patel', email: 'maya@bravestonelabs.com', role: 'Cashier', status: 'Active', lastActive: '18 min ago', branchId: 'kazanchis', phone: '+251 91 100 0003', defaultBranchId: 'kazanchis', emailSignature: 'Maya Patel\nCashier\nBright Smile Dental Clinic', preferences: defaultClinicUserPreferences },
+    { id: 'u4', name: 'Noah Reed', email: 'noah@bravestonelabs.com', role: 'Pharmacist', status: 'Active', lastActive: '1 hour ago', branchId: 'bole', phone: '+251 91 100 0004', defaultBranchId: 'bole', emailSignature: 'Noah Reed\nPharmacist\nBright Smile Dental Clinic', preferences: defaultClinicUserPreferences },
+    { id: 'u5', name: 'Lena Brooks', email: 'lena@bravestonelabs.com', role: 'Nurse / Assistant', status: 'Invited', lastActive: 'Pending', branchId: 'main', phone: '+251 91 100 0005', defaultBranchId: 'main', emailSignature: 'Lena Brooks\nNurse / Assistant\nBright Smile Dental Clinic', preferences: defaultClinicUserPreferences },
+  ],
+  roles: [
+    { role: 'Super Admin', access: 'All modules, organization, billing, reports, settings' },
+    { role: 'Clinic Admin', access: 'Dashboard, patients, appointments, reports, organization' },
+    { role: 'Dentist', access: 'Patients, dental charting, procedures, prescriptions' },
+    { role: 'Receptionist', access: 'Patients, appointments, forms, reminders' },
+    { role: 'Cashier', access: 'Billing, payments, invoices' },
+    { role: 'Prescription Assistant', access: 'Patient prescriptions and care instructions' },
+    { role: 'Accountant', access: 'Billing reports and payment history' },
+    { role: 'Nurse / Assistant', access: 'Symptoms, forms, appointments, care notes' },
+  ],
+  rolePermissions: [
+    { role: 'Super Admin', features: defaultFeaturesForRole('Super Admin') },
+    { role: 'Clinic Admin', features: defaultFeaturesForRole('Clinic Admin') },
+    { role: 'Dentist', features: defaultFeaturesForRole('Dentist') },
+    { role: 'Receptionist', features: defaultFeaturesForRole('Receptionist') },
+    { role: 'Cashier', features: defaultFeaturesForRole('Cashier') },
+    { role: 'Prescription Assistant', features: defaultFeaturesForRole('Prescription Assistant') },
+    { role: 'Accountant', features: defaultFeaturesForRole('Accountant') },
+    { role: 'Nurse / Assistant', features: defaultFeaturesForRole('Nurse / Assistant') },
+  ],
+  branches: clinicBranches,
+  organizationProfile: {
+    name: 'Bright Smile Dental Clinic',
+    legalName: 'Bright Smile Dental Clinic PLC',
+    contact: '+1 (555) 210-4488',
+    license: 'DFP-2026-118',
+    assistantMessages: [assistantWelcomeMessage],
+    doctorProfileNotifications: [],
+  },
+  financeEntries: [
+    { id: 'FIN-1001', type: 'income', date: '2026-05-01', category: 'Patient income', description: 'Consultation and restoration payment', party: 'Eleanor Fant', owner: 'Dr. Julianne Kim', amount: 450, status: 'Received', frequency: 'One-time' },
+    { id: 'FIN-1002', type: 'income', date: '2026-05-03', category: 'Patient income', description: 'Cleaning appointment payment', party: 'Marcus Holloway', owner: 'Dr. Miriam Hall', amount: 120, status: 'Received', frequency: 'One-time' },
+    { id: 'FIN-1003', type: 'income', date: '2026-05-08', category: 'Product sales', description: 'Whitening kit retail sales', party: 'Front desk', owner: 'Clinic Admin', amount: 620, status: 'Received', frequency: 'One-time' },
+    { id: 'FIN-1004', type: 'expense', date: '2026-05-01', category: 'Salaries', description: 'Monthly staff payroll', party: 'Clinic team', owner: 'Clinic Admin', amount: 5800, status: 'Scheduled', frequency: 'Monthly' },
+    { id: 'FIN-1005', type: 'expense', date: '2026-05-02', category: 'Rent', description: 'Clinic lease payment', party: 'Building management', owner: 'Clinic Admin', amount: 1800, status: 'Paid', frequency: 'Monthly' },
+    { id: 'FIN-1006', type: 'expense', date: '2026-05-05', category: 'Marketing', description: 'Local ads and social media', party: 'Growth agency', owner: 'Clinic Admin', amount: 650, status: 'Paid', frequency: 'Monthly' },
+    { id: 'FIN-1007', type: 'expense', date: '2026-05-10', category: 'Dental supplies', description: 'Consumables and materials', party: 'Dental supplier', owner: 'Dr. Robert Aris', amount: 1250, status: 'Due', frequency: 'Monthly' },
+    { id: 'FIN-1008', type: 'expense', date: '2026-05-12', category: 'Lab fees', description: 'Crown and aligner lab work', party: 'Partner lab', owner: 'Dr. Julianne Kim', amount: 920, status: 'Scheduled', frequency: 'One-time' },
+  ],
+};
