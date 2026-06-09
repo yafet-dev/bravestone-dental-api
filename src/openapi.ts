@@ -285,7 +285,7 @@ export const openApiDocument = {
             content: {
               'application/json': {
                 schema: {
-                  $ref: '#/components/schemas/ClinicAssistantReplyResponse',
+                  $ref: '#/components/schemas/ClinicAssistantReplyResult',
                 },
               },
             },
@@ -296,6 +296,35 @@ export const openApiDocument = {
               'application/json': {
                 schema: {
                   $ref: '#/components/schemas/ErrorResponse',
+                },
+              },
+            },
+          },
+          '500': {
+            description: 'Unexpected server error.',
+            content: {
+              'application/json': {
+                schema: {
+                  $ref: '#/components/schemas/ErrorResponse',
+                },
+              },
+            },
+          },
+        },
+      },
+    },
+    '/api/clinic/report-insights': {
+      post: {
+        tags: ['Clinic'],
+        summary: 'Generate clinic AI report insights',
+        operationId: 'postClinicReportInsights',
+        responses: {
+          '200': {
+            description: 'AI report insights generated from clinic workspace data.',
+            content: {
+              'application/json': {
+                schema: {
+                  $ref: '#/components/schemas/ClinicReportInsightsResult',
                 },
               },
             },
@@ -608,6 +637,79 @@ export const openApiDocument = {
           timestamp: { type: 'string', format: 'date-time' },
         },
       },
+      ClinicAIInsightCard: {
+        type: 'object',
+        required: ['id', 'title', 'value', 'helper', 'tone'],
+        properties: {
+          id: { type: 'string' },
+          title: { type: 'string' },
+          value: { type: 'string' },
+          helper: { type: 'string' },
+          tone: {
+            type: 'string',
+            enum: ['brand', 'success', 'warning'],
+          },
+        },
+      },
+      ClinicAIReportInsightSet: {
+        type: 'object',
+        required: ['dashboard', 'executive', 'financial', 'performance', 'generatedAt', 'source'],
+        properties: {
+          dashboard: {
+            type: 'array',
+            items: {
+              $ref: '#/components/schemas/ClinicAIInsightCard',
+            },
+          },
+          executive: {
+            type: 'array',
+            items: {
+              $ref: '#/components/schemas/ClinicAIInsightCard',
+            },
+          },
+          financial: {
+            type: 'array',
+            items: {
+              $ref: '#/components/schemas/ClinicAIInsightCard',
+            },
+          },
+          performance: {
+            type: 'array',
+            items: {
+              $ref: '#/components/schemas/ClinicAIInsightCard',
+            },
+          },
+          generatedAt: {
+            type: 'string',
+            format: 'date-time',
+          },
+          model: {
+            type: 'string',
+          },
+          source: {
+            type: 'string',
+            enum: ['deepseek', 'fallback'],
+          },
+        },
+      },
+      ClinicAIMemory: {
+        type: 'object',
+        required: ['summary', 'focusAreas', 'updatedAt'],
+        properties: {
+          summary: { type: 'string' },
+          focusAreas: {
+            type: 'array',
+            items: { type: 'string' },
+          },
+          updatedAt: {
+            type: 'string',
+            format: 'date-time',
+          },
+          reportInsights: {
+            $ref: '#/components/schemas/ClinicAIReportInsightSet',
+          },
+        },
+      },
       ClinicAssistantReplyRequest: {
         type: 'object',
         required: ['message'],
@@ -615,12 +717,34 @@ export const openApiDocument = {
           message: { type: 'string' },
         },
       },
-      ClinicAssistantReplyResponse: {
+      ClinicAssistantReplyResult: {
         type: 'object',
-        required: ['message'],
+        required: ['message', 'memory', 'source'],
         properties: {
           message: {
             $ref: '#/components/schemas/ClinicAssistantMessage',
+          },
+          memory: {
+            $ref: '#/components/schemas/ClinicAIMemory',
+          },
+          model: {
+            type: 'string',
+          },
+          source: {
+            type: 'string',
+            enum: ['deepseek', 'fallback'],
+          },
+        },
+      },
+      ClinicReportInsightsResult: {
+        type: 'object',
+        required: ['insights', 'memory'],
+        properties: {
+          insights: {
+            $ref: '#/components/schemas/ClinicAIReportInsightSet',
+          },
+          memory: {
+            $ref: '#/components/schemas/ClinicAIMemory',
           },
         },
       },

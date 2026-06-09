@@ -1,6 +1,11 @@
 import { Router, type Request } from 'express';
 import { resolveClinicOrganizationIdByAuthUserId } from '../auth/service';
-import { generateClinicAssistantReply, getClinicState, replaceClinicState } from './service';
+import {
+  generateClinicAssistantReply,
+  generateClinicReportInsights,
+  getClinicState,
+  replaceClinicState,
+} from './service';
 import type { ClinicWorkspaceState } from './types';
 
 export const clinicRouter = Router();
@@ -80,7 +85,23 @@ clinicRouter.post('/assistant/reply', async (request, response, next) => {
     }
 
     const reply = await generateClinicAssistantReply(message, context.organizationId);
-    response.json({ message: reply });
+    response.json(reply);
+  } catch (error) {
+    next(error);
+  }
+});
+
+clinicRouter.post('/report-insights', async (request, response, next) => {
+  try {
+    const context = await resolveClinicRequestOrganizationId(request);
+
+    if (!context.organizationId) {
+      response.status(context.status).json({ message: context.error });
+      return;
+    }
+
+    const insights = await generateClinicReportInsights(context.organizationId);
+    response.json(insights);
   } catch (error) {
     next(error);
   }

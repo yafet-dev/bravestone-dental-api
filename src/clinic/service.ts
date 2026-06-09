@@ -1,10 +1,20 @@
 import { Prisma } from '@prisma/client';
 import { ensureAdminStateSeeded } from '../admin/service';
 import { prisma } from '../db';
+import {
+  buildClinicFallbackAssistantContent,
+  buildClinicFallbackMemory,
+  buildClinicFallbackReportInsights,
+  isClinicAIReportInsightSetFresh,
+  requestClinicAssistantAI,
+  requestClinicReportInsightsAI,
+} from './ai';
 import { clinicSeedState } from './seed';
 import type {
+  ClinicAIMemory,
   ClinicAppointment,
   ClinicAssistantMessage,
+  ClinicAssistantReplyResult,
   ClinicDoctor,
   ClinicDoctorProfileNotification,
   ClinicFinanceEntry,
@@ -19,6 +29,7 @@ import type {
   ClinicPrescription,
   ClinicProcedure,
   ClinicReport,
+  ClinicReportInsightsResult,
   ClinicRevenuePoint,
   ClinicRoleDefinition,
   ClinicRolePermission,
@@ -1122,6 +1133,7 @@ function mapRelationalOrganizationProfile(
     legalName: organization.legalName || fallbackProfile.legalName,
     contact: organization.contactPhone || fallbackProfile.contact,
     license: organization.licenseNumber || fallbackProfile.license,
+    aiMemory: fallbackProfile.aiMemory,
     assistantMessages: toAssistantMessages(
       organization.assistantMessages,
       fallbackProfile.assistantMessages || []
@@ -2112,13 +2124,88 @@ export async function replaceClinicState(state: ClinicWorkspaceState, organizati
 export async function generateClinicAssistantReply(
   message: string,
   organizationId = clinicOrganizationId
-): Promise<ClinicAssistantMessage> {
+): Promise<ClinicAssistantReplyResult> {
   const state = await getClinicState(organizationId);
-
-  return {
+  const aiResult = await requestClinicAssistantAI(
+    state,
+    message,
+    state.organizationProfile.aiMemory
+  );
+  const replyTimestamp = new Date().toISOString();
+  const replyMessage: ClinicAssistantMessage = {
     id: `assistant-${Date.now()}`,
     role: 'assistant',
-    content: buildClinicAssistantContent(state, message),
-    timestamp: new Date().toISOString(),
+    content: aiResult?.reply || buildClinicFallbackAssistantContent(state, message),
+    timestamp: replyTimestamp,
+  };
+  const existingMessages = state.organizationProfile.assistantMessages || [];
+  const alreadyHasPrompt = existingMessages.some((entry) => (
+    entry.role === 'user' && entry.content.trim() === message.trim()
+  ));
+  const memory = aiResult?.memory || buildClinicFallbackMemory(
+    state,
+    state.organizationProfile.aiMemory
+  );
+  const nextState: ClinicWorkspaceState = {
+    ...state,
+    organizationProfile: {
+      ...state.organizationProfile,
+      aiMemory: memory,
+      assistantMessages: [
+        ...existingMessages,
+        ...(alreadyHasPrompt ? [] : [{
+          id: `user-${Date.now()}`,
+          role: 'user' as const,
+          content: message.trim(),
+          timestamp: replyTimestamp,
+        }]),
+        replyMessage,
+      ],
+    },
+  };
+
+  await replaceClinicState(nextState, organizationId);
+
+  return {
+    memory,
+    message: replyMessage,
+    model: aiResult?.model,
+    source: aiResult?.source || 'fallback',
+  };
+}
+
+export async function generateClinicReportInsights(
+  organizationId = clinicOrganizationId
+): Promise<ClinicReportInsightsResult> {
+  const state = await getClinicState(organizationId);
+  const existingMemory = state.organizationProfile.aiMemory;
+
+  if (isClinicAIReportInsightSetFresh(existingMemory?.reportInsights)) {
+    return {
+      insights: existingMemory!.reportInsights!,
+      memory: existingMemory!,
+    };
+  }
+
+  const aiResult = await requestClinicReportInsightsAI(state, existingMemory);
+  const insights = aiResult?.insights || buildClinicFallbackReportInsights(state);
+  const memory: ClinicAIMemory = aiResult?.memory || buildClinicFallbackMemory(
+    state,
+    existingMemory,
+    insights
+  );
+  const nextState: ClinicWorkspaceState = {
+    ...state,
+    organizationProfile: {
+      ...state.organizationProfile,
+      aiMemory: memory,
+    },
+  };
+
+  await replaceClinicState(nextState, organizationId);
+
+  return {
+    insights,
+    memory,
   };
 }

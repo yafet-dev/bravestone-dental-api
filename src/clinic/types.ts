@@ -33,6 +33,45 @@ export type ClinicAssistantMessage = {
   timestamp: string;
 };
 
+export type ClinicAIInsightTone = 'brand' | 'success' | 'warning';
+
+export type ClinicAIInsightCard = {
+  id: string;
+  title: string;
+  value: string;
+  helper: string;
+  tone: ClinicAIInsightTone;
+};
+
+export type ClinicAIReportInsightSet = {
+  dashboard: ClinicAIInsightCard[];
+  executive: ClinicAIInsightCard[];
+  financial: ClinicAIInsightCard[];
+  performance: ClinicAIInsightCard[];
+  generatedAt: string;
+  model?: string;
+  source: 'deepseek' | 'fallback';
+};
+
+export type ClinicAIMemory = {
+  summary: string;
+  focusAreas: string[];
+  updatedAt: string;
+  reportInsights?: ClinicAIReportInsightSet;
+};
+
+export type ClinicAssistantReplyResult = {
+  memory: ClinicAIMemory;
+  message: ClinicAssistantMessage;
+  model?: string;
+  source: 'deepseek' | 'fallback';
+};
+
+export type ClinicReportInsightsResult = {
+  insights: ClinicAIReportInsightSet;
+  memory: ClinicAIMemory;
+};
+
 export type ClinicDoctorProfileNotification = {
   id: string;
   patientId: string;
@@ -241,6 +280,7 @@ export type ClinicOrganizationProfile = {
   legalName: string;
   contact: string;
   license: string;
+  aiMemory?: ClinicAIMemory;
   assistantMessages?: ClinicAssistantMessage[];
   doctorProfileNotifications?: ClinicDoctorProfileNotification[];
 };
