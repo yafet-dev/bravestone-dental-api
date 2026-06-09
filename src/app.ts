@@ -1,6 +1,9 @@
 import cors from 'cors';
 import express, { NextFunction, Request, Response } from 'express';
 import swaggerUi from 'swagger-ui-express';
+import { adminRouter } from './admin/router';
+import { authRouter } from './auth/router';
+import { clinicRouter } from './clinic/router';
 import { openApiDocument } from './openapi';
 
 const serviceName = 'bravestone-dental-api';
@@ -29,6 +32,10 @@ export function createApp() {
   app.get('/openapi.json', (_request, response) => {
     response.json(openApiDocument);
   });
+
+  app.use('/api/admin', adminRouter);
+  app.use('/api/auth', authRouter);
+  app.use('/api/clinic', clinicRouter);
 
   app.use(
     '/docs',
