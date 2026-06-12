@@ -26,11 +26,37 @@ export type ClinicUserPreferences = {
   theme?: string;
 };
 
+export type ClinicAssistantAttachment = {
+  id: string;
+  name: string;
+  type: string;
+  size: number;
+  kind: 'image' | 'file';
+  dataUrl?: string;
+  textContent?: string;
+};
+
 export type ClinicAssistantMessage = {
   id: string;
   role: 'assistant' | 'user';
   content: string;
   timestamp: string;
+  attachments?: ClinicAssistantAttachment[];
+};
+
+export type ClinicAssistantSession = {
+  id: string;
+  title: string;
+  createdAt: string;
+  updatedAt: string;
+  projectId?: string;
+  messages: ClinicAssistantMessage[];
+};
+
+export type ClinicAssistantProject = {
+  id: string;
+  name: string;
+  createdAt: string;
 };
 
 export type ClinicAIInsightTone = 'brand' | 'success' | 'warning';
@@ -63,6 +89,7 @@ export type ClinicAIMemory = {
 export type ClinicAssistantReplyResult = {
   memory: ClinicAIMemory;
   message: ClinicAssistantMessage;
+  sessionTitle?: string;
   model?: string;
   source: 'deepseek' | 'fallback';
 };
@@ -282,6 +309,8 @@ export type ClinicOrganizationProfile = {
   license: string;
   aiMemory?: ClinicAIMemory;
   assistantMessages?: ClinicAssistantMessage[];
+  assistantSessions?: ClinicAssistantSession[];
+  assistantProjects?: ClinicAssistantProject[];
   doctorProfileNotifications?: ClinicDoctorProfileNotification[];
 };
 

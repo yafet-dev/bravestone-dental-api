@@ -5,16 +5,22 @@ import {
   buildClinicFallbackAssistantContent,
   buildClinicFallbackMemory,
   buildClinicFallbackReportInsights,
+  clinicAssistantOffTopicReply,
   isClinicAIReportInsightSetFresh,
+  isClinicScopedMessage,
   requestClinicAssistantAI,
   requestClinicReportInsightsAI,
 } from './ai';
+import { extractAttachmentContents } from './attachments';
 import { clinicSeedState } from './seed';
 import type {
   ClinicAIMemory,
   ClinicAppointment,
+  ClinicAssistantAttachment,
   ClinicAssistantMessage,
+  ClinicAssistantProject,
   ClinicAssistantReplyResult,
+  ClinicAssistantSession,
   ClinicDoctor,
   ClinicDoctorProfileNotification,
   ClinicFinanceEntry,
@@ -512,6 +518,47 @@ function isClinicAssistantMessage(value: unknown): value is ClinicAssistantMessa
   );
 }
 
+function isClinicAssistantSession(value: unknown): value is ClinicAssistantSession {
+  if (!value || typeof value !== 'object') {
+    return false;
+  }
+
+  const session = value as Partial<ClinicAssistantSession>;
+  return (
+    typeof session.id === 'string'
+    && typeof session.title === 'string'
+    && typeof session.createdAt === 'string'
+    && typeof session.updatedAt === 'string'
+    && Array.isArray(session.messages)
+    && session.messages.every(isClinicAssistantMessage)
+  );
+}
+
+function toAssistantSessions(value: unknown, fallback: ClinicAssistantSession[] = []) {
+  return Array.isArray(value)
+    ? value.filter(isClinicAssistantSession)
+    : fallback;
+}
+
+function isClinicAssistantProject(value: unknown): value is ClinicAssistantProject {
+  if (!value || typeof value !== 'object') {
+    return false;
+  }
+
+  const project = value as Partial<ClinicAssistantProject>;
+  return (
+    typeof project.id === 'string'
+    && typeof project.name === 'string'
+    && typeof project.createdAt === 'string'
+  );
+}
+
+function toAssistantProjects(value: unknown, fallback: ClinicAssistantProject[] = []) {
+  return Array.isArray(value)
+    ? value.filter(isClinicAssistantProject)
+    : fallback;
+}
+
 function isDoctorProfileNotification(value: unknown): value is ClinicDoctorProfileNotification {
   if (!value || typeof value !== 'object') {
     return false;
@@ -660,6 +707,8 @@ function normalizeClinicState(state: ClinicWorkspaceState): ClinicWorkspaceState
           ...defaultOrganizationProfile,
           ...state.organizationProfile,
           assistantMessages: state.organizationProfile.assistantMessages || defaultAssistantMessages,
+          assistantSessions: toAssistantSessions(state.organizationProfile.assistantSessions),
+          assistantProjects: toAssistantProjects(state.organizationProfile.assistantProjects),
           doctorProfileNotifications: Array.isArray(state.organizationProfile.doctorProfileNotifications)
             ? state.organizationProfile.doctorProfileNotifications.filter(isDoctorProfileNotification)
             : defaultDoctorProfileNotifications,
@@ -1163,6 +1212,8 @@ function mapRelationalOrganizationProfile(
       organization.assistantMessages,
       fallbackProfile.assistantMessages || []
     ),
+    assistantSessions: toAssistantSessions(fallbackProfile.assistantSessions),
+    assistantProjects: toAssistantProjects(fallbackProfile.assistantProjects),
     doctorProfileNotifications: toDoctorProfileNotifications(
       organization.doctorProfileNotifications,
       fallbackProfile.doctorProfileNotifications || []
@@ -2144,54 +2195,178 @@ export async function replaceClinicState(state: ClinicWorkspaceState, organizati
   return queryClinicState(targetOrganizationId);
 }
 
+function buildAssistantSessionTitle(message: string) {
+  const normalized = message.replace(/\s+/g, ' ').trim();
+  return normalized.length > 42 ? `${normalized.slice(0, 42).trimEnd()}...` : normalized || 'New chat';
+}
+
+/**
+ * Narrow update of the workspace organizationProfile Json column against a
+ * fresh read. The assistant endpoints must NOT use replaceClinicState: that
+ * full read-modify-write spans the multi-second AI call and clobbers any
+ * workspace changes the frontend autosaves in the meantime.
+ */
+async function updateClinicOrganizationProfileColumn(
+  organizationId: string,
+  mutate: (profile: ClinicOrganizationProfile) => ClinicOrganizationProfile
+) {
+  const record = await prisma.clinicWorkspaceState.findUnique({
+    where: { organizationId },
+    select: { id: true, organizationProfile: true },
+  });
+
+  if (!record) {
+    return false;
+  }
+
+  const currentProfile = record.organizationProfile
+    && typeof record.organizationProfile === 'object'
+    && !Array.isArray(record.organizationProfile)
+    ? record.organizationProfile as unknown as ClinicOrganizationProfile
+    : { name: '', legalName: '', contact: '', license: '' } as ClinicOrganizationProfile;
+
+  await prisma.clinicWorkspaceState.update({
+    where: { id: record.id },
+    data: { organizationProfile: toJsonValue(mutate(currentProfile)) },
+  });
+
+  return true;
+}
+
 export async function generateClinicAssistantReply(
   message: string,
-  organizationId = clinicOrganizationId
+  organizationId = clinicOrganizationId,
+  sessionId?: string,
+  attachments?: ClinicAssistantAttachment[]
 ): Promise<ClinicAssistantReplyResult> {
   const state = await getClinicState(organizationId);
-  const aiResult = await requestClinicAssistantAI(
-    state,
-    message,
-    state.organizationProfile.aiMemory
-  );
+  const sessions = state.organizationProfile.assistantSessions || [];
+  const activeSession = sessionId
+    ? sessions.find((session) => session.id === sessionId)
+    : undefined;
+  // Off-topic requests with no attachments never reach the LLM at all.
+  const skipAI = !attachments?.length && !isClinicScopedMessage(state, message);
+  const enrichedAttachments = attachments?.length && !skipAI
+    ? await extractAttachmentContents(attachments)
+    : attachments;
+  const aiResult = skipAI
+    ? null
+    : await requestClinicAssistantAI(
+        state,
+        message,
+        state.organizationProfile.aiMemory,
+        activeSession?.messages,
+        enrichedAttachments
+      );
   const replyTimestamp = new Date().toISOString();
+  const trimmedMessage = message.trim();
   const replyMessage: ClinicAssistantMessage = {
     id: `assistant-${Date.now()}`,
     role: 'assistant',
-    content: aiResult?.reply || buildClinicFallbackAssistantContent(state, message),
+    content: skipAI
+      ? clinicAssistantOffTopicReply
+      : aiResult?.reply || buildClinicFallbackAssistantContent(state, message, attachments),
     timestamp: replyTimestamp,
   };
-  const existingMessages = state.organizationProfile.assistantMessages || [];
-  const alreadyHasPrompt = existingMessages.some((entry) => (
-    entry.role === 'user' && entry.content.trim() === message.trim()
-  ));
+  const userMessage: ClinicAssistantMessage = {
+    id: `user-${Date.now()}`,
+    role: 'user',
+    content: trimmedMessage,
+    timestamp: replyTimestamp,
+    ...(attachments?.length ? { attachments } : {}),
+  };
   const memory = aiResult?.memory || buildClinicFallbackMemory(
     state,
     state.organizationProfile.aiMemory
   );
-  const nextState: ClinicWorkspaceState = {
-    ...state,
-    organizationProfile: {
-      ...state.organizationProfile,
+
+  // Prefer the short AI-generated topic label over the truncated user prompt.
+  const aiSessionTitle = aiResult?.sessionTitle?.trim() || '';
+
+  // Apply the conversation delta to a FRESH profile read so chats and
+  // projects created while the AI call was in flight are never clobbered.
+  const applyReplyToProfile = (profile: ClinicOrganizationProfile): ClinicOrganizationProfile => {
+    let profileUpdate: Partial<ClinicOrganizationProfile>;
+
+    if (sessionId) {
+      const freshSessions = profile.assistantSessions || [];
+      const freshActiveSession = freshSessions.find((session) => session.id === sessionId);
+      const nextSessions = freshActiveSession
+        ? freshSessions.map((session) => {
+            if (session.id !== sessionId) {
+              return session;
+            }
+
+            const alreadyHasPrompt = session.messages.some((entry) => (
+              entry.role === 'user' && entry.content.trim() === trimmedMessage
+            ));
+            // Only auto-derived titles get replaced — user renames are kept.
+            const titleIsAuto = !session.title.trim()
+              || session.title === 'New chat'
+              || session.title === buildAssistantSessionTitle(trimmedMessage);
+
+            return {
+              ...session,
+              title: titleIsAuto
+                ? (aiSessionTitle || buildAssistantSessionTitle(trimmedMessage))
+                : session.title,
+              updatedAt: replyTimestamp,
+              messages: [
+                ...session.messages,
+                ...(alreadyHasPrompt ? [] : [userMessage]),
+                replyMessage,
+              ],
+            };
+          })
+        : [
+            ...freshSessions,
+            {
+              id: sessionId,
+              title: aiSessionTitle || buildAssistantSessionTitle(trimmedMessage),
+              createdAt: replyTimestamp,
+              updatedAt: replyTimestamp,
+              messages: [userMessage, replyMessage],
+            },
+          ];
+
+      profileUpdate = { assistantSessions: nextSessions };
+    } else {
+      const existingMessages = profile.assistantMessages || [];
+      const alreadyHasPrompt = existingMessages.some((entry) => (
+        entry.role === 'user' && entry.content.trim() === trimmedMessage
+      ));
+
+      profileUpdate = {
+        assistantMessages: [
+          ...existingMessages,
+          ...(alreadyHasPrompt ? [] : [userMessage]),
+          replyMessage,
+        ],
+      };
+    }
+
+    return {
+      ...profile,
       aiMemory: memory,
-      assistantMessages: [
-        ...existingMessages,
-        ...(alreadyHasPrompt ? [] : [{
-          id: `user-${Date.now()}`,
-          role: 'user' as const,
-          content: message.trim(),
-          timestamp: replyTimestamp,
-        }]),
-        replyMessage,
-      ],
-    },
+      ...profileUpdate,
+    };
   };
 
-  await replaceClinicState(nextState, organizationId);
+  const updated = await updateClinicOrganizationProfileColumn(organizationId, applyReplyToProfile);
+
+  if (!updated) {
+    // No workspace row yet (first-ever interaction) — fall back to seeding the
+    // full state.
+    await replaceClinicState({
+      ...state,
+      organizationProfile: applyReplyToProfile(state.organizationProfile),
+    }, organizationId);
+  }
 
   return {
     memory,
     message: replyMessage,
+    ...(aiSessionTitle ? { sessionTitle: aiSessionTitle } : {}),
     model: aiResult?.model,
     source: aiResult?.source || 'fallback',
   };
@@ -2217,15 +2392,20 @@ export async function generateClinicReportInsights(
     existingMemory,
     insights
   );
-  const nextState: ClinicWorkspaceState = {
-    ...state,
-    organizationProfile: {
-      ...state.organizationProfile,
-      aiMemory: memory,
-    },
-  };
+  const updated = await updateClinicOrganizationProfileColumn(organizationId, (profile) => ({
+    ...profile,
+    aiMemory: memory,
+  }));
 
-  await replaceClinicState(nextState, organizationId);
+  if (!updated) {
+    await replaceClinicState({
+      ...state,
+      organizationProfile: {
+        ...state.organizationProfile,
+        aiMemory: memory,
+      },
+    }, organizationId);
+  }
 
   return {
     insights,

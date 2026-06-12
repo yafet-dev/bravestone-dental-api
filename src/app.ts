@@ -14,7 +14,7 @@ export function createApp() {
 
   app.disable('x-powered-by');
   app.use(cors({ origin: corsOrigin }));
-  app.use(express.json());
+  app.use(express.json({ limit: '30mb' }));
 
   app.get('/', (_request, response) => {
     response.redirect('/docs');
