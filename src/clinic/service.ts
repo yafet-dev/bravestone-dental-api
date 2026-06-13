@@ -204,7 +204,7 @@ function buildEmptyClinicState({
         id: staffId,
         name: memberName,
         email,
-        role: 'Clinic Admin',
+        role: 'clinic_admin',
         status: 'Active',
         lastActive: 'Now',
         branchId,
