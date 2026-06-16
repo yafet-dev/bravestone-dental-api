@@ -8,6 +8,9 @@
     "dev": "tsx watch src/server.ts",
     "build": "tsc",
     "start": "node dist/server.js",
+    "setup:storage": "tsx scripts/setup-storage.ts",
+    "migrate:roles": "tsx scripts/migrate-roles.ts",
+    "reconcile:roles": "tsx scripts/reconcile-snapshot-roles.ts",
     "lint": "tsc --noEmit"
   },
   "dependencies": {
