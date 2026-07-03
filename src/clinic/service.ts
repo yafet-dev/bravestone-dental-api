@@ -5,9 +5,11 @@ import {
   buildClinicFallbackAssistantContent,
   buildClinicFallbackMemory,
   buildClinicFallbackReportInsights,
+  clinicAssistantGreetingReply,
   clinicAssistantOffTopicReply,
   isClinicAIReportInsightSetFresh,
   isClinicScopedMessage,
+  isConversationalCourtesy,
   requestClinicAssistantAI,
   requestClinicReportInsightsAI,
 } from './ai';
@@ -2244,12 +2246,14 @@ export async function generateClinicAssistantReply(
   const activeSession = sessionId
     ? sessions.find((session) => session.id === sessionId)
     : undefined;
-  // Off-topic requests with no attachments never reach the LLM at all.
-  const skipAI = !attachments?.length && !isClinicScopedMessage(state, message);
+  // Greetings get an instant friendly reply; off-topic requests with no
+  // attachments never reach the LLM at all.
+  const isCourtesy = !attachments?.length && isConversationalCourtesy(message);
+  const skipAI = !attachments?.length && !isCourtesy && !isClinicScopedMessage(state, message);
   const enrichedAttachments = attachments?.length && !skipAI
     ? await extractAttachmentContents(attachments)
     : attachments;
-  const aiResult = skipAI
+  const aiResult = skipAI || isCourtesy
     ? null
     : await requestClinicAssistantAI(
         state,
@@ -2263,9 +2267,11 @@ export async function generateClinicAssistantReply(
   const replyMessage: ClinicAssistantMessage = {
     id: `assistant-${Date.now()}`,
     role: 'assistant',
-    content: skipAI
-      ? clinicAssistantOffTopicReply
-      : aiResult?.reply || buildClinicFallbackAssistantContent(state, message, attachments),
+    content: isCourtesy
+      ? clinicAssistantGreetingReply
+      : skipAI
+        ? clinicAssistantOffTopicReply
+        : aiResult?.reply || buildClinicFallbackAssistantContent(state, message, attachments),
     timestamp: replyTimestamp,
   };
   const userMessage: ClinicAssistantMessage = {
