@@ -1,5 +1,5 @@
 import '../src/env';
-import { createApp } from '../src/app';
+import app from '../src/app';
 import { assertTwoFactorConfiguration } from '../src/auth/twoFactor';
 
 /**
@@ -13,4 +13,4 @@ import { assertTwoFactorConfiguration } from '../src/auth/twoFactor';
  */
 assertTwoFactorConfiguration();
 
-export default createApp();
+export default app;

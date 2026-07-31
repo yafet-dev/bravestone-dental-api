@@ -122,3 +122,16 @@ export function createApp() {
 
   return app;
 }
+
+/**
+ * Vercel's Node detection can select this file as the function entry, and it
+ * requires the default export to be a request handler — an Express app is one.
+ * Exporting the instance rather than `createApp` matters: the platform would
+ * call the factory with (request, response), build an app, and answer nothing.
+ *
+ * `api/index.ts` is the entry this project declares; this export only keeps the
+ * deployment working if the platform resolves to `src/app.ts` instead. Building
+ * the app here is just route registration — nothing binds a port or opens a
+ * connection until `src/server.ts` calls listen.
+ */
+export default createApp();
