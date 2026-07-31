@@ -635,6 +635,20 @@ model ClinicFinanceEntry {
   @@map("clinic_finance_entries")
 }
 
+model ClinicDiscoveryEntry {
+  id           String   @id @default(cuid())
+  clinicName   String
+  contactName  String?
+  contactPhone String?
+  notes        String?
+  answers      Json
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@index([clinicName])
+  @@map("clinic_discovery_entries")
+}
+
 model Invitation {
   id               String       @id @default(cuid())
   organizationId   String
