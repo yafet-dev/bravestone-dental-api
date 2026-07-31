@@ -5,6 +5,7 @@ import { adminRouter } from './admin/router';
 import { authRouter } from './auth/router';
 import { describeAttachmentStorage } from './clinic/patientAttachments';
 import { clinicRouter } from './clinic/router';
+import { discoveryRouter } from './discovery/router';
 import { invitationsRouter } from './invitations/router';
 import { getSmtpConfigIssue, getSmtpSettings } from './mail/mailer';
 import { openApiDocument } from './openapi';
@@ -71,6 +72,7 @@ export function createApp() {
   app.use('/api/admin', adminRouter);
   app.use('/api/auth', authRouter);
   app.use('/api/clinic', clinicRouter);
+  app.use('/api/discovery', discoveryRouter);
   app.use('/api/invitations', invitationsRouter);
   app.use('/api/users', usersRouter);
 
