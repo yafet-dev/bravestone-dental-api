@@ -5,8 +5,9 @@
   "description": "Bravestone Dental API",
   "main": "dist/server.js",
   "scripts": {
+    "postinstall": "prisma generate",
     "dev": "tsx watch src/server.ts",
-    "build": "tsc",
+    "build": "prisma generate && tsc",
     "start": "node dist/server.js",
     "check:smtp": "tsx scripts/check-smtp.ts",
     "grant:super-admin": "tsx scripts/grant-super-admin.ts",
@@ -14,7 +15,7 @@
     "migrate:money-scopes": "tsx scripts/migrate-money-scopes.ts",
     "migrate:roles": "tsx scripts/migrate-roles.ts",
     "reconcile:roles": "tsx scripts/reconcile-snapshot-roles.ts",
-    "lint": "tsc --noEmit",
+    "lint": "prisma generate && tsc --noEmit",
     "storage:records": "tsx scripts/setup-records-bucket.ts",
     "migrate:attachments": "tsx scripts/migrate-record-attachments.ts",
     "verify:attachments": "tsx scripts/verify-attachments.mts"
