@@ -7,7 +7,6 @@ import {
   timingSafeEqual,
 } from 'node:crypto';
 import type { Prisma, User, UserTwoFactorCredential } from '@prisma/client';
-import { generateSecret, generateURI, verify } from 'otplib';
 import QRCode from 'qrcode';
 import { prisma } from '../db';
 import { verifyPassword } from './credentials';
@@ -25,6 +24,22 @@ const accountAttemptWindowMs = 5 * 60 * 1000;
 const accountAttemptLimit = 10;
 const recoveryCodeCount = 10;
 const recoveryCodeBytes = 16;
+
+const importOtpLibrary = () => import('otplib');
+
+let otpLibraryPromise: ReturnType<typeof importOtpLibrary> | undefined;
+
+// Otplib 13 publishes an ESM implementation alongside a CommonJS wrapper. The
+// wrapper reaches an ESM-only Base32 dependency through require(), which older
+// serverless Node loaders reject. A native dynamic import selects the ESM graph
+// directly and is cached after the first two-factor request.
+function loadOtpLibrary() {
+  if (!otpLibraryPromise) {
+    otpLibraryPromise = importOtpLibrary();
+  }
+
+  return otpLibraryPromise;
+}
 
 type Transaction = Prisma.TransactionClient;
 
@@ -169,6 +184,7 @@ async function verifyTotpCode(credential: UserTwoFactorCredential, rawCode: unkn
     return null;
   }
 
+  const { verify } = await loadOtpLibrary();
   const result = await verify({
     algorithm: 'sha1',
     digits: 6,
@@ -324,6 +340,7 @@ export async function beginTwoFactorSetup(input: {
   userId: string;
 }) {
   const user = await requirePassword(input.userId, input.currentPassword);
+  const { generateSecret, generateURI } = await loadOtpLibrary();
   const secret = generateSecret({ length: 20 });
   const setupExpiresAt = new Date(Date.now() + setupTtlMs);
   const provisioningUri = generateURI({
