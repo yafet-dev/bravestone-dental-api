@@ -1,6 +1,6 @@
 import express, { Router } from 'express';
 import { sendAuthError } from '../auth/errors';
-import { requireAuth, requireSuperAdmin } from '../auth/middleware';
+import { requireAuth, requireSignedSessionToken, requireSuperAdmin } from '../auth/middleware';
 import {
   deleteOrganization,
   getAdminState,
@@ -14,8 +14,9 @@ export const adminRouter = Router();
 // The whole platform state lives behind these routes — every clinic, owner
 // email, and payment record — so both reads and writes require a signed session
 // belonging to a super admin.
-adminRouter.use(requireAuth, requireSuperAdmin);
+adminRouter.use(requireSignedSessionToken);
 adminRouter.use(express.json({ limit: '30mb' }));
+adminRouter.use(requireAuth, requireSuperAdmin);
 
 adminRouter.get('/bootstrap', async (_request, response, next) => {
   try {

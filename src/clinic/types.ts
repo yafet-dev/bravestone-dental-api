@@ -168,7 +168,31 @@ export type ClinicPatient = {
   medicalHistory: string[];
   dentalChart?: Array<{
     toothId: number;
-    status: 'healthy' | 'decayed' | 'filled' | 'missing' | 'treated' | 'extracted';
+    status:
+      | 'healthy'
+      | 'decayed'
+      | 'fractured'
+      | 'abscess'
+      | 'gum-disease'
+      | 'mobile'
+      | 'sensitive'
+      | 'impacted'
+      | 'unerupted'
+      | 'filled'
+      | 'sealant'
+      | 'veneer'
+      | 'root-canal'
+      | 'crown'
+      | 'bridge'
+      | 'implant'
+      | 'treated'
+      | 'missing'
+      | 'extracted';
+    findings?: string[];
+    /** ISO timestamp of when the status above was last picked in the chart. */
+    statusUpdatedAt?: string;
+    /** ISO timestamp per finding id, set when that finding was ticked. */
+    findingDates?: Record<string, string>;
     notes: string;
   }>;
   notes?: ClinicPatientNote[];
@@ -256,6 +280,12 @@ export type ClinicDentalExamination = {
   extraOralExam: string;
   intraOralExam: string;
   medicalHistory: {
+    /**
+     * Ticked condition ids from the clinic UI's condition catalogue. The five
+     * answers below are rebuilt from it on save, so readers written against the
+     * original shape keep working.
+     */
+    conditions: string[];
     diabetic: 'Unknown' | 'No' | 'Yes';
     pregnancy: 'Unknown' | 'No' | 'Yes' | 'Not applicable';
     cardiac: 'Unknown' | 'No' | 'Yes';
@@ -388,11 +418,19 @@ export type ClinicOrganizationBranch = {
   status: ClinicOrganizationBranchStatus;
 };
 
+export type ClinicServicePrice = {
+  id: string;
+  name: string;
+  note: string;
+  price: number;
+};
+
 export type ClinicOrganizationProfile = {
   name: string;
   legalName: string;
   contact: string;
   license: string;
+  servicePrices?: ClinicServicePrice[];
   aiMemory?: ClinicAIMemory;
   assistantMessages?: ClinicAssistantMessage[];
   assistantSessions?: ClinicAssistantSession[];
@@ -419,6 +457,19 @@ export type ClinicPatientProfile = {
   bloodGroup: string;
   nextAppointment?: string;
   paymentPlan: ClinicPaymentPlan;
+  /**
+   * Priced lines the doctor added after examining the patient. Their sent sum
+   * becomes `paymentPlan.total`, which is why registration no longer asks for a
+   * price nobody knows yet. See `treatmentCharges.ts` for the shared rule.
+   */
+  treatmentCharges?: Array<{
+    id: string;
+    description: string;
+    amount: number;
+    addedByName: string;
+    addedAt: string;
+    sentAt?: string;
+  }>;
   pendingAmount: number;
   recordCount: number;
   cardNumber: string;

@@ -2,20 +2,30 @@ import './env';
 import { PrismaPg } from '@prisma/adapter-pg';
 import { PrismaClient } from '@prisma/client';
 
-const databaseUrl = process.env.DIRECT_URL || process.env.DATABASE_URL;
+// Application traffic must use DATABASE_URL. In production that points at the
+// Supavisor transaction pooler (port 6543), which can share a small number of
+// Postgres connections across Vercel's short-lived function instances.
+// DIRECT_URL is reserved for migrations and other session-level tooling; using
+// it here gives every warm function its own session connections and exhausts a
+// small Supabase pool very quickly.
+const isVercel = process.env.VERCEL === '1';
+const databaseUrl = process.env.DATABASE_URL || (isVercel ? undefined : process.env.DIRECT_URL);
 
 if (!databaseUrl) {
-  throw new Error('Missing DIRECT_URL or DATABASE_URL for Prisma.');
+  throw new Error(isVercel
+    ? 'Missing DATABASE_URL for Prisma. Vercel must use the transaction pooler URL.'
+    : 'Missing DATABASE_URL or DIRECT_URL for Prisma.');
 }
 
 const adapter = new PrismaPg({
-  // This Express API is a persistent process, so prefer Supavisor session mode
-  // (DIRECT_URL, port 5432) over the serverless transaction pooler.
   connectionString: databaseUrl,
   connectionTimeoutMillis: 10_000,
-  idleTimeoutMillis: 30_000,
+  // A Vercel instance only needs one connection: concurrent instances share
+  // the transaction pooler, and limiting each instance prevents connection
+  // storms during traffic spikes and deployments.
+  max: isVercel ? 1 : 5,
+  idleTimeoutMillis: isVercel ? 10_000 : 30_000,
   keepAlive: true,
-  max: 5,
 }, {
   onConnectionError: (error) => {
     console.error('PostgreSQL connection error:', error.message);

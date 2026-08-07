@@ -26,6 +26,7 @@ import { scopeClinicStateForAccess } from './access';
 import { calculatePatientAge } from './patientAge';
 import { defaultFeaturesForRole, normalizeFeatureList, type WorkspaceAccess } from './permissions';
 import { clinicSeedState } from './seed';
+import { normalizeTreatmentCharges, resolveTreatmentTotal } from './treatmentCharges';
 import type {
   ClinicAiBudgetSummary,
   ClinicAIMemory,
@@ -253,6 +254,20 @@ function normalizeYesNoUnknown(value: unknown): 'Unknown' | 'No' | 'Yes' {
   }
 }
 
+/** Ticked medical-condition ids, deduplicated and free of empty entries. */
+function normalizeConditionList(value: unknown): string[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  const conditions = value
+    .filter((entry): entry is string => typeof entry === 'string')
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+
+  return [...new Set(conditions)];
+}
+
 function normalizePregnancyStatus(value: unknown): ClinicDentalExamination['medicalHistory']['pregnancy'] {
   if (typeof value === 'string') {
     const normalized = value.trim().toLowerCase();
@@ -285,6 +300,7 @@ function normalizeDentalExamination(value: unknown): ClinicDentalExamination | u
     extraOralExam: normalizeExaminationText(examination.extraOralExam),
     intraOralExam: normalizeExaminationText(examination.intraOralExam),
     medicalHistory: {
+      conditions: normalizeConditionList(medicalHistory.conditions),
       diabetic: normalizeYesNoUnknown(medicalHistory.diabetic),
       pregnancy: normalizePregnancyStatus(medicalHistory.pregnancy),
       cardiac: normalizeYesNoUnknown(medicalHistory.cardiac),
@@ -886,15 +902,18 @@ function normalizeClinicState(state: ClinicWorkspaceState): ClinicWorkspaceState
       new Date(first.date).getTime() - new Date(second.date).getTime()
     ));
     const latestPayment = sortedPayments.at(-1);
+    const treatmentCharges = normalizeTreatmentCharges(profile.treatmentCharges);
     // Keep the agreed treatment price independent from payment transactions,
-    // including when the patient has overpaid.
-    const totalCost = paymentPlan.total;
+    // including when the patient has overpaid. The price comes from the doctor's
+    // sent charges once there are any; the stored figure stands until then.
+    const totalCost = resolveTreatmentTotal(paymentPlan.total, treatmentCharges);
     const pendingAmount = Math.max(totalCost - transactionTotal, 0);
 
     return {
       ...profile,
       address: normalizePatientAddress(profile.address),
       pendingAmount,
+      treatmentCharges,
       paymentPlan: {
         ...paymentPlan,
         total: totalCost,
@@ -1516,6 +1535,11 @@ function mapRelationalOrganizationProfile(
     legalName: organization.legalName || fallbackProfile.legalName,
     contact: organization.contactPhone || fallbackProfile.contact,
     license: organization.licenseNumber || fallbackProfile.license,
+    // Prices live in the workspace profile JSON rather than a relational table.
+    // Preserve them when relational organization fields are overlaid, otherwise
+    // every GET (including the echo returned by PUT /bootstrap) drops a list that
+    // was successfully written moments earlier.
+    servicePrices: fallbackProfile.servicePrices,
     aiMemory: fallbackProfile.aiMemory,
     assistantMessages: toAssistantMessages(
       organization.assistantMessages,

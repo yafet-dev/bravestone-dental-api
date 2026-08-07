@@ -46,6 +46,7 @@ export const WORKSPACE_FEATURES = [
   'sick_leave',
   'finance',
   'billing',
+  'prices',
   'reports',
   'ai_assistant',
   'organization',
@@ -82,6 +83,7 @@ export const FEATURE_LABELS: Record<WorkspaceFeature, string> = {
   sick_leave: 'Sick Leave',
   finance: 'Finance',
   billing: 'Billing',
+  prices: 'Prices',
   reports: 'Reports',
   ai_assistant: 'AI Assistant',
   organization: 'Organization',
@@ -99,6 +101,7 @@ export const FEATURE_PATHS: Record<WorkspaceFeature, string> = {
   sick_leave: '/sick-leave',
   finance: '/finance',
   billing: '/billing',
+  prices: '/prices',
   reports: '/reports',
   ai_assistant: '/ai-assistant',
   organization: '/users',
@@ -150,6 +153,8 @@ const featureAliases: Record<string, GrantKey> = {
   organization: 'organization',
   patient_payments: PATIENT_PAYMENTS_PERMISSION,
   payments: PATIENT_PAYMENTS_PERMISSION,
+  price_list: 'prices',
+  pricing: 'prices',
   sick_leave: 'sick_leave',
   users: 'organization',
 };
@@ -307,7 +312,7 @@ export function defaultFeaturesForRole(role: string | null | undefined): string[
     case 'dentist':
       return ['dashboard', 'patients', 'appointments', 'doctors', 'dental_charting', 'prescriptions', 'sick_leave', 'billing', 'ai_assistant', 'settings', PATIENT_PAYMENTS_PERMISSION];
     case 'receptionist':
-      return ['dashboard', 'patients', 'appointments', 'doctors', 'sick_leave', 'billing', 'settings', PATIENT_PAYMENTS_PERMISSION];
+      return ['dashboard', 'patients', 'appointments', 'doctors', 'sick_leave', 'billing', 'prices', 'settings', PATIENT_PAYMENTS_PERMISSION];
     case 'cashier':
       return ['dashboard', 'patients', 'billing', 'settings', PATIENT_PAYMENTS_PERMISSION];
     case 'accountant':
@@ -392,6 +397,11 @@ export function resolveWorkspaceAccess({
   );
 
   BASELINE_FEATURES.forEach((feature) => granted.add(feature));
+  // Prices is part of the reception desk's core workflow. Add it even for
+  // clinics whose stored receptionist grant predates the dedicated feature.
+  if (slug === 'receptionist') {
+    granted.add('prices');
+  }
   ADMIN_ONLY_FEATURES.forEach((feature) => granted.delete(feature));
 
   return {

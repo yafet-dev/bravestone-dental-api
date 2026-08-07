@@ -39,6 +39,25 @@ function readBearerToken(request: Request) {
 }
 
 /**
+ * Performs the synchronous, cryptographic part of session validation before a
+ * request body is read. Body parsers must subscribe to the incoming stream
+ * before any asynchronous database middleware yields; otherwise a short or
+ * empty chunked request can finish first and body-parser sees an unreadable
+ * stream. Full revocation, account, and organization checks still happen in
+ * requireAuth after parsing.
+ */
+export function requireSignedSessionToken(request: Request, response: Response, next: NextFunction) {
+  const token = readBearerToken(request);
+
+  if (!token || !readSessionToken(token)) {
+    response.status(401).json({ code: 'unauthenticated', message: 'Sign in to continue.' });
+    return;
+  }
+
+  next();
+}
+
+/**
  * Resolves the caller from their signed session token, and only from that. A
  * bare user id in a request header is not proof of anything — it identifies an
  * account without demonstrating control of it — so it is never accepted.

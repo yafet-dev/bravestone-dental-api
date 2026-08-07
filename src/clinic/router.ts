@@ -1,6 +1,6 @@
 import express, { Router, type NextFunction, type Request, type Response } from 'express';
 import { sendAuthError } from '../auth/errors';
-import { requireAuth } from '../auth/middleware';
+import { requireAuth, requireSignedSessionToken } from '../auth/middleware';
 import { prisma } from '../db';
 import {
   mergeClinicStateForAccess,
@@ -94,14 +94,20 @@ async function requireClinicOrganizationAccess(
 
 // Every clinic route reads or writes patient data, so all of them need a signed
 // session before the handler runs.
+// Verify the signed token synchronously, then attach the body parser before any
+// database-backed middleware yields. Waiting for async authentication first can
+// let a short/chunked request end before body-parser subscribes, producing
+// `stream.not.readable`. The full session and organization checks remain below.
+clinicRouter.use(requireSignedSessionToken);
+// A 25 MiB accepted image grows to about 33.4 MiB as base64 before JSON
+// framing. Anonymous callers are rejected by the signed-token gate above before
+// this larger parser can allocate for their request.
+clinicRouter.use(express.json({ limit: '36mb' }));
 clinicRouter.use(requireAuth);
 // Denial and suspension apply to every clinic capability, including live
 // handoffs, AI, reports, and attachment reads. Enforce the organization state
 // once at the router boundary so no individual endpoint can forget the check.
 clinicRouter.use(requireClinicOrganizationAccess);
-// A 25 MiB accepted image grows to about 33.4 MiB as base64 before JSON
-// framing. This parser runs only after requireAuth above.
-clinicRouter.use(express.json({ limit: '36mb' }));
 
 // Care handoffs are the one live channel in the workspace, so they carry their
 // own small routes instead of riding the whole-workspace bootstrap payload.

@@ -17,6 +17,7 @@ export default defineConfig({
   },
   // Client generation does not need a live database URL, so fresh installs can
   // still generate types before deployment secrets are available. Migration and
-  // introspection commands use DIRECT_URL first, matching the runtime fallback.
+  // introspection commands use DIRECT_URL first. Runtime application traffic
+  // is configured separately in src/db.ts and prefers DATABASE_URL.
   ...(databaseUrl ? { datasource: { url: databaseUrl } } : {}),
 });

@@ -246,6 +246,7 @@ const FEATURE_SLICES: Record<WorkspaceFeature, StateSlice[]> = {
   finance: ['financeEntries', 'revenueData', 'invoices', 'patientPayments', 'patients', 'patientProfiles'],
   organization: ['staffUsers', 'branches', 'roles', 'rolePermissions'],
   patients: ['patients', 'patientProfiles', 'diagnoses', 'symptoms', 'forms', 'appointments'],
+  prices: [],
   prescriptions: ['prescriptions', 'patients'],
   reports: [
     'reports',
@@ -529,9 +530,9 @@ function mergeStaffUsers(
  * Field-wise merge of the organization profile.
  *
  * The clinic's own details (name, legal name, contact, licence) are admin-only.
- * The assistant transcript, chat sessions, projects, and handoff notifications
- * are shared workspace activity that any member may add to. The AI memory
- * quotes money, so it follows the financial grant.
+ * The price list follows the dedicated Prices feature. The assistant transcript,
+ * chat sessions, projects, and handoff notifications are shared workspace
+ * activity. The AI memory quotes money, so it follows the financial grant.
  */
 function mergeOrganizationProfile(
   incoming: ClinicOrganizationProfile | undefined,
@@ -547,6 +548,10 @@ function mergeOrganizationProfile(
   ADMIN_ONLY_PROFILE_FIELDS.forEach((field) => {
     next[field] = current[field];
   });
+
+  if (hasFeature(access, 'prices') && Array.isArray(incoming.servicePrices)) {
+    next.servicePrices = incoming.servicePrices;
+  }
 
   if (hasFeature(access, 'ai_assistant')) {
     next.assistantMessages = incoming.assistantMessages ?? current.assistantMessages;
