@@ -24,9 +24,19 @@ import {
 import { extractAttachmentContents } from './attachments';
 import { scopeClinicStateForAccess } from './access';
 import { calculatePatientAge } from './patientAge';
-import { defaultFeaturesForRole, normalizeFeatureList, type WorkspaceAccess } from './permissions';
+import {
+  defaultFeaturesForRole,
+  normalizeFeatureList,
+  type RoleGrant,
+  type WorkspaceAccess,
+} from './permissions';
 import { clinicSeedState } from './seed';
-import { normalizeTreatmentCharges, resolveTreatmentTotal } from './treatmentCharges';
+import {
+  normalizeTreatmentCharges,
+  resolveTreatmentTotal,
+  sentTreatmentCharges,
+  sumTreatmentCharges,
+} from './treatmentCharges';
 import type {
   ClinicAiBudgetSummary,
   ClinicAIMemory,
@@ -53,6 +63,7 @@ import type {
   ClinicRecordAttachment,
   ClinicReport,
   ClinicReportInsightsResult,
+  ClinicServicePrice,
   ClinicRevenuePoint,
   ClinicRoleDefinition,
   ClinicRolePermission,
@@ -567,6 +578,7 @@ type RelationalClinicOrganization = {
     id: string;
     patientId: string | null;
     doctorId: string | null;
+    diseaseId: string | null;
     patient: string;
     tooth: string;
     diagnosis: string;
@@ -963,6 +975,7 @@ function normalizeClinicState(state: ClinicWorkspaceState): ClinicWorkspaceState
     })),
     diagnoses: state.diagnoses.map((diagnosis) => ({
       ...diagnosis,
+      diseaseId: diagnosis.diseaseId?.trim() || undefined,
       complaint: diagnosis.complaint ?? '',
       doctorAction: diagnosis.doctorAction ?? '',
       medicine: diagnosis.medicine ?? '',
@@ -1224,6 +1237,11 @@ function mapRelationalPatientProfiles(
         lastPaymentDate: '',
         method: 'Cash',
       }),
+      // Treatment lines currently live in the durable workspace JSON while the
+      // relational profile carries the derived total. Copy the lines back onto
+      // the relational view so a refresh never collapses an itemised charge
+      // history into only one total.
+      treatmentCharges: normalizeTreatmentCharges(fallbackProfile?.treatmentCharges),
       pendingAmount: profile.pendingAmount,
       recordCount: profile.recordCount,
       cardNumber: profile.cardNumber,
@@ -1353,6 +1371,7 @@ function mapRelationalDiagnoses(
       id: diagnosis.id,
       patientId: diagnosis.patientId || undefined,
       doctorId: diagnosis.doctorId || undefined,
+      diseaseId: diagnosis.diseaseId ?? fallbackDiagnosis?.diseaseId ?? undefined,
       patient: diagnosis.patient,
       tooth: diagnosis.tooth,
       diagnosis: diagnosis.diagnosis,
@@ -1941,6 +1960,183 @@ export async function getClinicState(organizationId = clinicOrganizationId) {
   return queryClinicState(organizationId);
 }
 
+export type PatientTreatmentChargesUpdate = {
+  balance: number;
+  patientId: string;
+  pendingAmount: number;
+  totalCost: number;
+  treatmentCharges: NonNullable<ClinicPatientProfile['treatmentCharges']>;
+};
+
+/**
+ * Fast, focused persistence for the doctor's price editor.
+ *
+ * The generic workspace writer replaces every relational clinic collection and
+ * can take many seconds. A charge button only needs to update one profile, one
+ * patient balance, and the two matching workspace JSON columns. Keeping this
+ * mutation narrow also prevents an old whole-workspace response from restoring
+ * a charge the doctor just removed.
+ */
+export async function updatePatientTreatmentCharges({
+  charges,
+  organizationId,
+  patientId,
+  state,
+}: {
+  charges: unknown;
+  organizationId: string;
+  patientId: string;
+  state: ClinicWorkspaceState;
+}): Promise<PatientTreatmentChargesUpdate | null> {
+  const profile = state.patientProfiles.find((item) => item.patientId === patientId);
+  const patient = state.patients.find((item) => item.id === patientId);
+
+  if (!profile || !patient) {
+    return null;
+  }
+
+  const treatmentCharges = normalizeTreatmentCharges(charges);
+  const sentCharges = sentTreatmentCharges(treatmentCharges);
+  const hadSentCharges = sentTreatmentCharges(
+    normalizeTreatmentCharges(profile.treatmentCharges)
+  ).length > 0;
+  // Keep a legacy/manual total while the doctor is only drafting their first
+  // lines. Once this patient has used sent line items, removing the last one
+  // intentionally brings the itemised total back to zero.
+  const totalCost = sentCharges.length > 0
+    ? sumTreatmentCharges(sentCharges)
+    : hadSentCharges ? 0 : profile.paymentPlan.total;
+  const pendingAmount = Math.max(totalCost - profile.paymentPlan.paid, 0);
+  const nextProfile: ClinicPatientProfile = {
+    ...profile,
+    treatmentCharges,
+    pendingAmount,
+    paymentPlan: {
+      ...profile.paymentPlan,
+      total: totalCost,
+    },
+  };
+  const nextPatient: ClinicPatient = {
+    ...patient,
+    balance: pendingAmount,
+  };
+  const nextProfiles = state.patientProfiles.map((item) => (
+    item.patientId === patientId ? nextProfile : item
+  ));
+  const nextPatients = state.patients.map((item) => (
+    item.id === patientId ? nextPatient : item
+  ));
+
+  await prisma.$transaction([
+    prisma.clinicWorkspaceState.update({
+      where: { organizationId },
+      data: {
+        patientProfiles: toJsonValue(nextProfiles),
+        patients: toJsonValue(nextPatients),
+      },
+    }),
+    prisma.clinicPatientProfile.updateMany({
+      where: { organizationId, patientId },
+      data: {
+        paymentPlan: toJsonValue(nextProfile.paymentPlan),
+        pendingAmount,
+      },
+    }),
+    prisma.clinicPatient.updateMany({
+      where: { organizationId, id: patientId },
+      data: { balance: pendingAmount },
+    }),
+  ]);
+
+  return {
+    balance: pendingAmount,
+    patientId,
+    pendingAmount,
+    totalCost,
+    treatmentCharges,
+  };
+}
+
+/** The permission grid alone, for authorising a write without loading a workspace. */
+export async function getClinicRolePermissions(
+  organizationId: string
+): Promise<RoleGrant[] | null> {
+  const record = await prisma.clinicWorkspaceState.findUnique({
+    where: { organizationId },
+    select: { rolePermissions: true },
+  });
+
+  // Stored by this API in the shape `resolveWorkspaceAccess` reads, and that
+  // function already tolerates entries it does not recognise.
+  return Array.isArray(record?.rolePermissions)
+    ? (record.rolePermissions as unknown as RoleGrant[])
+    : null;
+}
+
+function normalizeServicePrices(value: unknown): ClinicServicePrice[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value.flatMap((entry): ClinicServicePrice[] => {
+    if (!entry || typeof entry !== 'object') {
+      return [];
+    }
+
+    const service = entry as Record<string, unknown>;
+    const name = typeof service.name === 'string' ? service.name.trim() : '';
+
+    if (!name) {
+      return [];
+    }
+
+    const price = Number(service.price);
+
+    return [{
+      id: typeof service.id === 'string' && service.id.trim() ? service.id.trim() : name,
+      name,
+      note: typeof service.note === 'string' ? service.note.trim() : '',
+      // Zero is meaningful here: the board publishes it as "On request".
+      price: Number.isFinite(price) && price > 0 ? Math.round(price * 100) / 100 : 0,
+    }];
+  });
+}
+
+/**
+ * Fast, focused persistence for the clinic's price list.
+ *
+ * The same reasoning as `updatePatientTreatmentCharges`: the generic workspace
+ * writer deletes and recreates fifteen relational collections inside one
+ * transaction, which took about a minute on a real clinic — for a list that lives
+ * entirely in one JSON column and touches no relational table at all. This reads
+ * that column and writes it back, and nothing else.
+ */
+export async function updateClinicServicePrices({
+  organizationId,
+  servicePrices,
+}: {
+  organizationId: string;
+  servicePrices: unknown;
+}): Promise<ClinicServicePrice[] | null> {
+  const nextPrices = normalizeServicePrices(servicePrices);
+  // `jsonb_set` rather than read-then-write: one round trip instead of two, and it
+  // replaces the one key it is given. Reading the profile, editing it in memory and
+  // writing the whole object back would let this save undo a clinic name someone
+  // changed on another screen in between.
+  const updated = await prisma.$executeRaw`
+    UPDATE "clinic_workspace_states"
+    SET "organizationProfile" = jsonb_set(
+      COALESCE("organizationProfile", '{}'::jsonb),
+      '{servicePrices}',
+      ${JSON.stringify(nextPrices)}::jsonb,
+      true
+    )
+    WHERE "organizationId" = ${organizationId}
+  `;
+
+  return updated > 0 ? nextPrices : null;
+}
+
 export async function replaceClinicState(
   state: ClinicWorkspaceState,
   organizationId = clinicOrganizationId,
@@ -2281,6 +2477,7 @@ export async function replaceClinicState(
           organizationId: targetOrganizationId,
           patientId: diagnosis.patientId || null,
           doctorId: diagnosis.doctorId || null,
+          diseaseId: diagnosis.diseaseId || null,
           patient: diagnosis.patient,
           tooth: diagnosis.tooth,
           diagnosis: diagnosis.diagnosis,

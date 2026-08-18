@@ -155,11 +155,29 @@ export type ClinicCareHandoff = {
   acknowledgedAt?: string;
 };
 
+/** A small, live doctor-to-reception price message carried by the handoff stream. */
+export type ClinicTreatmentPriceHandoff = {
+  change: 'new' | 'updated';
+  id: string;
+  patientId: string;
+  patientName: string;
+  patientNumber: string;
+  patientPhone: string;
+  sentAt: string;
+  sentBy: string;
+  treatmentTotal: number;
+  charges: Array<{
+    id: string;
+    description: string;
+    amount: number;
+  }>;
+};
+
 export type ClinicPatient = {
   id: string;
   name: string;
   age: number;
-  gender: 'male' | 'female' | 'other';
+  gender: 'male' | 'female';
   phone: string;
   email: string;
   lastVisit: string;
@@ -246,6 +264,8 @@ export type ClinicDiagnosis = {
   id: string;
   patientId?: string;
   doctorId?: string;
+  /** Stable morbidity classification selected by the clinician. */
+  diseaseId?: string;
   patient: string;
   tooth: string;
   diagnosis: string;

@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { Client } from 'pg';
-import type { ClinicCareHandoff } from '../types';
+import type { ClinicCareHandoff, ClinicTreatmentPriceHandoff } from '../types';
 
 /**
  * Fan-out for care handoff changes.
@@ -30,6 +30,7 @@ const originId = randomUUID();
 
 export type CareHandoffEvent =
   | { type: 'changed'; organizationId: string; handoff: ClinicCareHandoff }
+  | { type: 'treatment-price'; organizationId: string; price: ClinicTreatmentPriceHandoff }
   | { type: 'reload'; organizationId: string };
 
 type PublishedEvent = CareHandoffEvent & { originId?: string };
@@ -98,6 +99,10 @@ function parseEvent(payload: string | undefined): PublishedEvent | null {
     }
 
     if (parsed.type === 'changed' && parsed.handoff?.id) {
+      return parsed;
+    }
+
+    if (parsed.type === 'treatment-price' && parsed.price?.id) {
       return parsed;
     }
 

@@ -1,6 +1,10 @@
 import type { CareHandoff, Prisma } from '@prisma/client';
 import { prisma } from '../../db';
-import type { ClinicCareHandoff, ClinicCareHandoffStatus } from '../types';
+import type {
+  ClinicCareHandoff,
+  ClinicCareHandoffStatus,
+  ClinicTreatmentPriceHandoff,
+} from '../types';
 import { publishCareHandoffEvent } from './events';
 
 /** Statuses a handoff can still move out of. */
@@ -43,6 +47,17 @@ export function toClinicCareHandoff(row: CareHandoff): ClinicCareHandoff {
 function notify(organizationId: string, handoff: ClinicCareHandoff) {
   return publishCareHandoffEvent(
     { type: 'changed', organizationId, handoff },
+    (sql, values) => prisma.$executeRawUnsafe(sql, ...values)
+  );
+}
+
+/** Sends a durable price update over the same live channel reception already uses. */
+export function notifyTreatmentPrice(
+  organizationId: string,
+  price: ClinicTreatmentPriceHandoff,
+) {
+  return publishCareHandoffEvent(
+    { type: 'treatment-price', organizationId, price },
     (sql, values) => prisma.$executeRawUnsafe(sql, ...values)
   );
 }

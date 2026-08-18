@@ -383,11 +383,26 @@ export function scopeClinicStateForAccess(
     patients: keep('patients', state.patients).map((patient) => (
       showPatientMoney ? patient : { ...patient, balance: 0 }
     )),
-    patientProfiles: keep('patientProfiles', state.patientProfiles).map((profile) => (
-      showPatientMoney
+    patientProfiles: keep('patientProfiles', state.patientProfiles).map((profile) => {
+      const visibleProfile = showPatientMoney
         ? profile
-        : { ...profile, paymentPlan: { ...emptyPaymentPlan }, pendingAmount: 0 }
-    )),
+        : { ...profile, paymentPlan: { ...emptyPaymentPlan }, pendingAmount: 0 };
+
+      // Draft prices are the doctor's working notes. Reception and other roles
+      // receive only lines the doctor explicitly sent.
+      if (access.role === 'dentist') {
+        return visibleProfile;
+      }
+
+      const isReceptionDesk = access.role === 'receptionist' || access.role === 'cashier';
+
+      return {
+        ...visibleProfile,
+        treatmentCharges: isReceptionDesk
+          ? visibleProfile.treatmentCharges?.filter((charge) => charge.sentAt)
+          : [],
+      };
+    }),
     patientPayments: keep('patientPayments', state.patientPayments),
     appointments: keep('appointments', state.appointments),
     revenueData: keep('revenueData', state.revenueData),
@@ -451,6 +466,22 @@ function restoreProfileMoney(
     return previous
       ? { ...profile, paymentPlan: previous.paymentPlan, pendingAmount: previous.pendingAmount }
       : profile;
+  });
+}
+
+/** Reception can read a doctor's sent prices but cannot author or remove them. */
+function restoreTreatmentCharges(
+  incoming: ClinicWorkspaceState['patientProfiles'],
+  current: ClinicWorkspaceState['patientProfiles']
+) {
+  const stored = new Map(current.map((profile) => [profile.patientId, profile]));
+
+  return incoming.map((profile) => {
+    const previous = stored.get(profile.patientId);
+
+    return previous
+      ? { ...profile, treatmentCharges: previous.treatmentCharges }
+      : { ...profile, treatmentCharges: [] };
   });
 }
 
@@ -751,7 +782,10 @@ export function mergeClinicStateForAccess({
   );
 
   const patients = take('patients', incoming.patients, current.patients);
-  const patientProfiles = take('patientProfiles', incoming.patientProfiles, current.patientProfiles);
+  const submittedPatientProfiles = take('patientProfiles', incoming.patientProfiles, current.patientProfiles);
+  const patientProfiles = access.role === 'dentist'
+    ? submittedPatientProfiles
+    : restoreTreatmentCharges(submittedPatientProfiles, current.patientProfiles);
   const doctors = take('doctors', incoming.doctors, current.doctors);
   const procedures = take('procedures', incoming.procedures, current.procedures);
 

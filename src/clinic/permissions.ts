@@ -121,11 +121,12 @@ export const FEATURE_MONEY_SCOPE: Partial<Record<WorkspaceFeature, MoneyPermissi
 export const FINANCIAL_FEATURES = Object.keys(FEATURE_MONEY_SCOPE) as WorkspaceFeature[];
 
 /**
- * Always available, to every role, and not revocable: your own profile and
- * preferences. Locking someone out of `/settings` would leave them unable to
- * change their own password or notification choices.
+ * Always available, to every role, and not revocable: the clinic's non-sensitive
+ * price list plus personal profile and preferences. Locking someone out of
+ * `/settings` would leave them unable to change their own password or notification
+ * choices, while Prices is shared clinic reference data every role may maintain.
  */
-export const BASELINE_FEATURES: WorkspaceFeature[] = ['settings'];
+export const BASELINE_FEATURES: WorkspaceFeature[] = ['prices', 'settings'];
 
 /**
  * Clinic administration — staff, branches, roles, and the permission grid
@@ -397,11 +398,6 @@ export function resolveWorkspaceAccess({
   );
 
   BASELINE_FEATURES.forEach((feature) => granted.add(feature));
-  // Prices is part of the reception desk's core workflow. Add it even for
-  // clinics whose stored receptionist grant predates the dedicated feature.
-  if (slug === 'receptionist') {
-    granted.add('prices');
-  }
   ADMIN_ONLY_FEATURES.forEach((feature) => granted.delete(feature));
 
   return {

@@ -9,6 +9,7 @@ import { discoveryRouter } from './discovery/router';
 import { invitationsRouter } from './invitations/router';
 import { getSmtpConfigIssue, getSmtpSettings } from './mail/mailer';
 import { openApiDocument } from './openapi';
+import { publicPriceBoardRouter } from './priceBoard/router';
 import { avatarsRoot } from './users/avatars';
 import { usersRouter } from './users/router';
 
@@ -74,6 +75,10 @@ export function createApp() {
   app.use('/api/clinic', clinicRouter);
   app.use('/api/discovery', discoveryRouter);
   app.use('/api/invitations', invitationsRouter);
+  // Deliberately prefixed: everything under /api/public is readable without a
+  // session, so the trust boundary is visible at the mount rather than buried in
+  // whichever router happens to skip requireAuth.
+  app.use('/api/public', publicPriceBoardRouter);
   app.use('/api/users', usersRouter);
 
   // Uploaded profile pictures are public by design, the same as the Storage

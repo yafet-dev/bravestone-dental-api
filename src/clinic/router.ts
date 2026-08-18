@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import express, { Router, type NextFunction, type Request, type Response } from 'express';
 import { sendAuthError } from '../auth/errors';
 import { requireAuth, requireSignedSessionToken } from '../auth/middleware';
@@ -10,6 +11,7 @@ import {
 } from './access';
 import { loadAiBudget } from './aiBudget';
 import { careHandoffsRouter } from './handoffs/router';
+import { notifyTreatmentPrice } from './handoffs/store';
 import {
   createPatientAttachment,
   deletePatientAttachment,
@@ -26,12 +28,20 @@ import {
   type WorkspaceAccess,
   type WorkspaceFeature,
 } from './permissions';
+import {
+  createPriceBoardLink,
+  disablePriceBoardLink,
+  getPriceBoardLink,
+} from '../priceBoard/service';
 import { isClinicAdminRole } from './roles';
 import {
   generateClinicAssistantReply,
   generateClinicReportInsights,
+  getClinicRolePermissions,
   getClinicState,
   replaceClinicState,
+  updateClinicServicePrices,
+  updatePatientTreatmentCharges,
 } from './service';
 import type { ClinicAssistantAttachment, ClinicWorkspaceState } from './types';
 
@@ -274,6 +284,95 @@ clinicRouter.get('/bootstrap', async (request, response, next) => {
   }
 });
 
+clinicRouter.put('/patients/:patientId/treatment-charges', async (request, response, next) => {
+  try {
+    const context = await resolveClinicRequestContext(request, response);
+
+    if (!context) {
+      return;
+    }
+
+    if (!requireFeature(context.access, 'patients', response)) {
+      return;
+    }
+
+    if (context.access.role !== 'dentist' && !context.access.canManageClinic) {
+      response.status(403).json({
+        code: 'forbidden',
+        message: 'Only a dentist or clinic administrator can change treatment prices.',
+      });
+      return;
+    }
+
+    const patientId = request.params.patientId?.trim();
+
+    if (!patientId || !Array.isArray(request.body?.charges)) {
+      response.status(400).json({ message: 'A patient and treatment charge list are required.' });
+      return;
+    }
+
+    const previousProfile = context.state.patientProfiles.find((profile) => (
+      profile.patientId === patientId
+    ));
+    const previousSentCharges = (previousProfile?.treatmentCharges || []).filter((charge) => (
+      Boolean(charge.sentAt)
+    ));
+    const result = await updatePatientTreatmentCharges({
+      charges: request.body.charges,
+      organizationId: context.organizationId,
+      patientId,
+      state: context.state,
+    });
+
+    if (!result) {
+      response.status(404).json({ message: 'Patient profile not found.' });
+      return;
+    }
+
+    const sentCharges = result.treatmentCharges.filter((charge) => Boolean(charge.sentAt));
+    const sentShape = (charges: typeof sentCharges) => charges.map((charge) => ({
+      amount: charge.amount,
+      description: charge.description,
+      id: charge.id,
+      sentAt: charge.sentAt || '',
+    }));
+    const sentPricesChanged = (
+      JSON.stringify(sentShape(previousSentCharges)) !== JSON.stringify(sentShape(sentCharges))
+    );
+
+    // Reception gets the complete current sent-price card whenever its billable
+    // shape changes. Draft-only edits stay quiet; adding, editing, or removing a
+    // sent line updates the live modal immediately.
+    if (sentPricesChanged) {
+      const patient = context.state.patients.find((item) => item.id === patientId);
+      const sentAt = new Date().toISOString();
+
+      await notifyTreatmentPrice(context.organizationId, {
+        change: previousSentCharges.length ? 'updated' : 'new',
+        id: `price:${patientId}:${randomUUID()}`,
+        patientId,
+        patientName: patient?.name || 'Patient',
+        patientNumber: previousProfile?.directoryId || previousProfile?.cardNumber || patientId,
+        patientPhone: patient?.phone || '',
+        sentAt,
+        sentBy: request.actor?.fullName || sentCharges[0]?.addedByName || 'Doctor',
+        treatmentTotal: result.totalCost,
+        charges: sentCharges.map((charge) => ({
+          id: charge.id,
+          description: charge.description,
+          amount: charge.amount,
+        })),
+      });
+    }
+
+    response.json(result);
+  } catch (error) {
+    if (!sendAuthError(error, response)) {
+      next(error);
+    }
+  }
+});
+
 clinicRouter.put('/bootstrap', async (request, response, next) => {
   try {
     const context = await resolveClinicRequestContext(request, response);
@@ -431,6 +530,135 @@ clinicRouter.get('/assistant/budget', async (request, response, next) => {
         exhausted: budget.exhausted,
       },
     });
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * Saves the clinic price list on its own.
+ *
+ * Deliberately not PUT /bootstrap: that path merges and rewrites the whole
+ * workspace, deleting and recreating fifteen relational collections, so adding one
+ * treatment made the clinic wait about a minute. Prices live in a single JSON
+ * column, and this route touches only that column.
+ *
+ * Authorisation matches what the workspace merge already allowed for this field —
+ * the `prices` feature, no admin requirement — read from the permission grid alone
+ * rather than by loading the workspace it sits in.
+ */
+clinicRouter.put('/service-prices', async (request, response, next) => {
+  try {
+    const context = resolveClinicRequestOrganizationId(request);
+
+    if (!context.organizationId) {
+      response.status(context.status).json({ message: context.error });
+      return;
+    }
+
+    if (!Array.isArray(request.body?.servicePrices)) {
+      response.status(400).json({ message: 'A price list is required.' });
+      return;
+    }
+
+    const access = resolveWorkspaceAccess({
+      role: request.actor?.role,
+      rolePermissions: await getClinicRolePermissions(context.organizationId),
+    });
+
+    if (!requireFeature(access, 'prices', response)) {
+      return;
+    }
+
+    const servicePrices = await updateClinicServicePrices({
+      organizationId: context.organizationId,
+      servicePrices: request.body.servicePrices,
+    });
+
+    if (!servicePrices) {
+      response.status(404).json({ message: 'This clinic workspace does not exist yet.' });
+      return;
+    }
+
+    response.json({ servicePrices });
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * The waiting-room price board link.
+ *
+ * Prices is shared, non-sensitive clinic reference data. Every signed-in role may
+ * read, publish, or disable the board, just as every role may maintain the price
+ * list itself. The clinic organization resolved from the signed session remains
+ * the boundary, so a role can never manage another clinic's board.
+ *
+ * Deliberately NOT built on `resolveClinicRequestContext`: that loads the entire
+ * workspace — every patient, payment, appointment and diagnosis — to derive
+ * per-role feature grants. These endpoints touch one indexed `organizations` row,
+ * so paying for a whole-workspace read on every visit to the Prices page would
+ * make opening the page wait on the clinic's largest query.
+ */
+function resolvePriceBoardOrganizationId(request: Request, response: Response) {
+  const context = resolveClinicRequestOrganizationId(request);
+
+  if (!context.organizationId) {
+    response.status(context.status).json({ message: context.error });
+    return null;
+  }
+
+  return context.organizationId;
+}
+
+clinicRouter.get('/price-board', async (request, response, next) => {
+  try {
+    const organizationId = resolvePriceBoardOrganizationId(request, response);
+
+    if (!organizationId) {
+      return;
+    }
+
+    response.json({ board: await getPriceBoardLink(organizationId) });
+  } catch (error) {
+    next(error);
+  }
+});
+
+clinicRouter.post('/price-board', async (request, response, next) => {
+  try {
+    const organizationId = resolvePriceBoardOrganizationId(request, response);
+
+    if (!organizationId) {
+      return;
+    }
+
+    // The slug comes from the registered clinic name on the organization row. It
+    // is claimed once and kept, so reading it from the workspace snapshot instead
+    // would cost that whole-workspace query for a value that never changes again.
+    const organization = await prisma.organization.findUnique({
+      where: { id: organizationId },
+      select: { name: true },
+    });
+
+    response.json({
+      board: await createPriceBoardLink(organizationId, organization?.name || 'clinic'),
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+clinicRouter.delete('/price-board', async (request, response, next) => {
+  try {
+    const organizationId = resolvePriceBoardOrganizationId(request, response);
+
+    if (!organizationId) {
+      return;
+    }
+
+    await disablePriceBoardLink(organizationId);
+    response.json({ board: null });
   } catch (error) {
     next(error);
   }

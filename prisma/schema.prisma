@@ -68,6 +68,12 @@ model Organization {
   aiWeekResetAt              DateTime?
   aiWeekInputTokens          Int                           @default(0)
   aiWeekOutputTokens         Int                           @default(0)
+  /// Readable clinic segment of the public price board URL, claimed once so a
+  /// published link survives a rename. Null until an admin generates the link.
+  priceBoardSlug             String?                       @unique
+  /// Short code that makes the board URL unguessable. Rotating it replaces this
+  /// value; clearing it turns the public board off and keeps the slug reserved.
+  priceBoardCode             String?
   dashboardAppointmentsToday Int                           @default(0)
   dashboardMonthlyRevenue    Int                           @default(0)
   dashboardLowStockItems     Int                           @default(0)
@@ -458,6 +464,7 @@ model ClinicDiagnosis {
   organizationId String
   patientId      String?
   doctorId       String?
+  diseaseId      String?
   patient        String
   tooth          String
   diagnosis      String
@@ -476,6 +483,7 @@ model ClinicDiagnosis {
   doctorRecord   ClinicDoctor?  @relation(fields: [doctorId], references: [id], onDelete: SetNull)
 
   @@index([organizationId])
+  @@index([organizationId, diseaseId])
   @@index([patientId])
   @@index([doctorId])
   @@map("clinic_diagnoses")

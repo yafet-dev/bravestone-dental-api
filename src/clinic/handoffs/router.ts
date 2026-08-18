@@ -1,6 +1,8 @@
 import { randomUUID } from 'node:crypto';
 import { Router, type Request, type Response } from 'express';
 import { prisma } from '../../db';
+import { resolveWorkspaceAccess } from '../permissions';
+import type { ClinicRolePermission } from '../types';
 import {
   acknowledgeHandoff,
   assignPatient,
@@ -177,10 +179,28 @@ careHandoffsRouter.get('/stream', async (request, response, next) => {
   // would leave the only path to report the failure being `next()`, which cannot
   // work once headers are sent.
   let snapshot;
+  let canReceiveTreatmentPrices = false;
 
   try {
     await ensureCareHandoffListener();
-    snapshot = await listCareHandoffs(organizationId);
+    const [handoffs, workspace] = await Promise.all([
+      listCareHandoffs(organizationId),
+      prisma.clinicWorkspaceState.findUnique({
+        where: { organizationId },
+        select: { rolePermissions: true },
+      }),
+    ]);
+    snapshot = handoffs;
+    const access = resolveWorkspaceAccess({
+      role: request.actor?.role,
+      rolePermissions: Array.isArray(workspace?.rolePermissions)
+        ? workspace.rolePermissions as ClinicRolePermission[]
+        : [],
+    });
+    canReceiveTreatmentPrices = (
+      (access.role === 'receptionist' || access.role === 'cashier')
+      && access.canViewPatientPayments
+    );
   } catch (error) {
     next(error);
     return;
@@ -255,6 +275,15 @@ careHandoffsRouter.get('/stream', async (request, response, next) => {
   unsubscribe = subscribeToCareHandoffs(organizationId, (event) => {
     if (event.type === 'changed') {
       send('changed', { handoff: event.handoff });
+      return;
+    }
+
+    if (event.type === 'treatment-price' && canReceiveTreatmentPrices) {
+      send('treatment-price', { price: event.price });
+      return;
+    }
+
+    if (event.type === 'treatment-price') {
       return;
     }
 
