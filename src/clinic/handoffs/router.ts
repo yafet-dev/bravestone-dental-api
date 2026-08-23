@@ -8,6 +8,7 @@ import {
   assignPatient,
   cancelOpenSignals,
   createReadySignal,
+  dispatchPatient,
   listCareHandoffs,
 } from './store';
 import { ensureCareHandoffListener, subscribeToCareHandoffs } from './events';
@@ -97,6 +98,58 @@ careHandoffsRouter.post('/cancel', async (request, response, next) => {
     });
 
     response.json({ handoffs });
+  } catch (error) {
+    next(error);
+  }
+});
+
+careHandoffsRouter.post('/dispatch', async (request, response, next) => {
+  try {
+    const organizationId = resolveOrganizationId(request, response);
+
+    if (!organizationId) {
+      return;
+    }
+
+    const access = resolveWorkspaceAccess({ role: request.actor?.role });
+    const canDispatch = access.canManageClinic || [
+      'receptionist',
+      'reception',
+      'branch_manager',
+      'front_desk',
+      'frontdesk',
+    ].includes(access.role);
+
+    if (!canDispatch) {
+      response.status(403).json({ message: 'Only reception or a clinic admin can send a patient to a provider.' });
+      return;
+    }
+
+    const doctorId = readString(request.body?.doctorId);
+    const doctorName = readString(request.body?.doctorName);
+    const patientId = readString(request.body?.patientId);
+    const patientName = readString(request.body?.patientName);
+
+    if (!doctorId || !doctorName || !patientId || !patientName) {
+      response.status(400).json({ message: 'A patient and recipient are required.' });
+      return;
+    }
+
+    const handoff = await dispatchPatient({
+      ...(readString(request.body?.appointmentId) ? { appointmentId: readString(request.body?.appointmentId) } : {}),
+      assignedByMemberId: request.actor?.id || '',
+      assignedByName: request.actor?.fullName || 'Reception',
+      branchId: readString(request.body?.branchId),
+      doctorId,
+      doctorName,
+      doctorSpecialty: readString(request.body?.doctorSpecialty, 'Dentist'),
+      id: readString(request.body?.id) || `care-${randomUUID().replace(/-/g, '').slice(0, 12)}`,
+      organizationId,
+      patientId,
+      patientName,
+    });
+
+    response.status(201).json({ handoff });
   } catch (error) {
     next(error);
   }

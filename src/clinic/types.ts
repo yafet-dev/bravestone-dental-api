@@ -445,12 +445,30 @@ export type ClinicServicePrice = {
   price: number;
 };
 
+export type ClinicMedicalHistoryCheckbox = {
+  id: string;
+  label: string;
+  femaleOnly?: boolean;
+};
+
+export type ClinicMedicalHistoryCategory = {
+  id: string;
+  label: string;
+  checkboxes: ClinicMedicalHistoryCheckbox[];
+};
+
+export type ClinicMedicalHistoryTemplate = {
+  categories: ClinicMedicalHistoryCategory[];
+  archivedLabels?: Record<string, string>;
+};
+
 export type ClinicOrganizationProfile = {
   name: string;
   legalName: string;
   contact: string;
   license: string;
   servicePrices?: ClinicServicePrice[];
+  medicalHistoryTemplate?: ClinicMedicalHistoryTemplate;
   aiMemory?: ClinicAIMemory;
   assistantMessages?: ClinicAssistantMessage[];
   assistantSessions?: ClinicAssistantSession[];

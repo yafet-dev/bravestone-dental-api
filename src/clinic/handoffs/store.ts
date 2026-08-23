@@ -89,7 +89,16 @@ export type CreateReadySignalInput = {
 export async function createReadySignal(input: CreateReadySignalInput) {
   const now = new Date();
 
-  const created = await prisma.$transaction(async (tx) => {
+  const { cancelledIds, created } = await prisma.$transaction(async (tx) => {
+    const openRows = await tx.careHandoff.findMany({
+      where: {
+        organizationId: input.organizationId,
+        doctorId: input.doctorId,
+        status: { in: openStatuses },
+      },
+      select: { id: true },
+    });
+
     await tx.careHandoff.updateMany({
       where: {
         organizationId: input.organizationId,
@@ -102,7 +111,7 @@ export async function createReadySignal(input: CreateReadySignalInput) {
       data: { status: 'cancelled', updatedAt: now },
     });
 
-    return tx.careHandoff.create({
+    const newHandoff = await tx.careHandoff.create({
       data: {
         id: input.id,
         organizationId: input.organizationId,
@@ -116,7 +125,21 @@ export async function createReadySignal(input: CreateReadySignalInput) {
         updatedAt: now,
       },
     });
+
+    return {
+      cancelledIds: openRows.map((row) => row.id),
+      created: newHandoff,
+    };
   });
+
+  if (cancelledIds.length) {
+    const cancelledRows = await prisma.careHandoff.findMany({
+      where: { id: { in: cancelledIds } },
+    });
+    await Promise.all(cancelledRows.map((row) => (
+      notify(input.organizationId, toClinicCareHandoff(row))
+    )));
+  }
 
   const handoff = toClinicCareHandoff(created);
   await notify(input.organizationId, handoff);
@@ -166,6 +189,72 @@ export type AssignPatientInput = {
   patientId: string;
   patientName: string;
 };
+
+export type DispatchPatientInput = {
+  appointmentId?: string;
+  assignedByMemberId: string;
+  assignedByName: string;
+  branchId: string;
+  doctorId: string;
+  doctorName: string;
+  doctorSpecialty: string;
+  id: string;
+  organizationId: string;
+  patientId: string;
+  patientName: string;
+};
+
+/**
+ * Reception sends a patient straight to a named clinician or clinic admin.
+ *
+ * This is deliberately a single write. The previous workflow first required the
+ * recipient to create a `ready` row and then required reception to answer it,
+ * which made a routine front-desk action depend on two people opening the same
+ * connection panel. An existing ready signal is closed in the transaction so
+ * the recipient sees one unambiguous assignment.
+ */
+export async function dispatchPatient(input: DispatchPatientInput) {
+  const now = new Date();
+
+  const created = await prisma.$transaction(async (tx) => {
+    await tx.careHandoff.updateMany({
+      where: {
+        organizationId: input.organizationId,
+        doctorId: input.doctorId,
+        status: { in: openStatuses },
+      },
+      data: { status: 'cancelled', updatedAt: now },
+    });
+
+    return tx.careHandoff.create({
+      data: {
+        id: input.id,
+        organizationId: input.organizationId,
+        branchId: input.branchId,
+        doctorId: input.doctorId,
+        doctorName: input.doctorName,
+        doctorSpecialty: input.doctorSpecialty,
+        // The recipient owns the open row for cancellation purposes. The front
+        // desk actor is recorded separately in `assignedByMemberId`.
+        requestedByMemberId: input.doctorId,
+        requestedAt: now,
+        status: 'assigned',
+        patientId: input.patientId,
+        patientName: input.patientName,
+        appointmentId: input.appointmentId ?? null,
+        assignedByMemberId: input.assignedByMemberId,
+        assignedByName: input.assignedByName,
+        assignedAt: now,
+        updatedAt: now,
+      },
+    });
+  });
+
+  const handoff = toClinicCareHandoff(created);
+  await notify(input.organizationId, handoff);
+
+  return handoff;
+}
 
 /**
  * Sends a patient in. The `status: 'ready'` guard is the point of the dedicated

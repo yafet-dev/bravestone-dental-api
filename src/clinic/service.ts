@@ -1559,6 +1559,7 @@ function mapRelationalOrganizationProfile(
     // every GET (including the echo returned by PUT /bootstrap) drops a list that
     // was successfully written moments earlier.
     servicePrices: fallbackProfile.servicePrices,
+    medicalHistoryTemplate: fallbackProfile.medicalHistoryTemplate,
     aiMemory: fallbackProfile.aiMemory,
     assistantMessages: toAssistantMessages(
       organization.assistantMessages,

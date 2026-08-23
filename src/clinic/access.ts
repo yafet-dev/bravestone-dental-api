@@ -584,6 +584,17 @@ function mergeOrganizationProfile(
     next.servicePrices = incoming.servicePrices;
   }
 
+  // The medical-history checklist is one organization-wide paper form. Staff
+  // who can work with patients may configure it from any branch, and the value
+  // remains on the shared organization profile rather than a branch or patient.
+  if (
+    hasFeature(access, 'patients')
+    && incoming.medicalHistoryTemplate
+    && Array.isArray(incoming.medicalHistoryTemplate.categories)
+  ) {
+    next.medicalHistoryTemplate = incoming.medicalHistoryTemplate;
+  }
+
   if (hasFeature(access, 'ai_assistant')) {
     next.assistantMessages = incoming.assistantMessages ?? current.assistantMessages;
     next.assistantSessions = incoming.assistantSessions ?? current.assistantSessions;

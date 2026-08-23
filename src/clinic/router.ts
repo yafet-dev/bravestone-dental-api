@@ -13,6 +13,10 @@ import { loadAiBudget } from './aiBudget';
 import { careHandoffsRouter } from './handoffs/router';
 import { notifyTreatmentPrice } from './handoffs/store';
 import {
+  parsePatientDirectoryQuery,
+  readPatientDirectoryPage,
+} from './patientDirectory';
+import {
   createPatientAttachment,
   deletePatientAttachment,
   describeAttachmentStorage,
@@ -279,6 +283,44 @@ clinicRouter.get('/bootstrap', async (request, response, next) => {
         ? scopeClinicStateForOnboarding(context.state, context.actorId)
         : scopeClinicStateForAccess(context.state, context.access, context.actorId),
     );
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * One page of the patient directory.
+ *
+ * Deliberately NOT built on `resolveClinicRequestContext`: that loads the whole
+ * workspace to derive per-role grants, which is the very cost this endpoint
+ * exists to avoid. The permission grid is read on its own, exactly as the price
+ * routes below do it, and `readPatientDirectoryPage` then applies the same
+ * role redaction the bootstrap response uses.
+ */
+clinicRouter.get('/patients/directory', async (request, response, next) => {
+  try {
+    const context = resolveClinicRequestOrganizationId(request);
+
+    if (!context.organizationId) {
+      response.status(context.status).json({ message: context.error });
+      return;
+    }
+
+    const access = resolveWorkspaceAccess({
+      role: request.actor?.role,
+      rolePermissions: await getClinicRolePermissions(context.organizationId),
+    });
+
+    if (!requireFeature(access, 'patients', response)) {
+      return;
+    }
+
+    response.json(await readPatientDirectoryPage({
+      access,
+      actorId: request.actor?.id,
+      organizationId: context.organizationId,
+      query: parsePatientDirectoryQuery(request.query as Record<string, unknown>),
+    }));
   } catch (error) {
     next(error);
   }

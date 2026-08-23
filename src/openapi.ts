@@ -1,4 +1,5 @@
 import './env';
+import { PATIENT_DIRECTORY_PAGE_SIZES } from './clinic/patientDirectory';
 
 export const openApiDocument = {
   openapi: '3.0.3',
@@ -1299,6 +1300,93 @@ export const openApiDocument = {
               'application/json': {
                 schema: {
                   $ref: '#/components/schemas/ClinicWorkspaceState',
+                },
+              },
+            },
+          },
+          '401': { $ref: '#/components/responses/AuthError' },
+          '403': { $ref: '#/components/responses/AuthError' },
+          '500': {
+            description: 'Unexpected server error.',
+            content: {
+              'application/json': {
+                schema: {
+                  $ref: '#/components/schemas/ErrorResponse',
+                },
+              },
+            },
+          },
+        },
+      },
+    },
+    '/api/clinic/patients/directory': {
+      get: {
+        tags: ['Clinic'],
+        summary: 'Get one page of the patient directory',
+        description: "Returns the patients, profiles and payments for a single page of the Patients screen, with the search, filters, sort, count and offset applied in the database. Use this rather than the whole-workspace bootstrap read when only the directory is needed. Patient balances and treatment prices are redacted for roles without financial access, exactly as on the bootstrap route.",
+        operationId: 'getClinicPatientDirectory',
+        security: [{ bearerAuth: [] }],
+        parameters: [
+          {
+            in: 'query',
+            name: 'page',
+            description: 'One-based page number. Defaults to the first page.',
+            schema: { type: 'integer', minimum: 1, default: 1 },
+          },
+          {
+            in: 'query',
+            name: 'pageSize',
+            description: 'Rows per page. Any other value falls back to 25.',
+            // Read from the endpoint's own list rather than restated here, which
+            // had already fallen a size behind it once.
+            schema: { type: 'integer', enum: [...PATIENT_DIRECTORY_PAGE_SIZES], default: 25 },
+          },
+          {
+            in: 'query',
+            name: 'search',
+            description: 'Matches a patient name, email address, phone number, or patient number.',
+            schema: { type: 'string', maxLength: 120 },
+          },
+          {
+            in: 'query',
+            name: 'status',
+            description: "Patient status, or `needsPayment` for anyone with an outstanding balance.",
+            schema: { type: 'string', enum: ['all', 'needsPayment', 'active', 'inactive', 'lost'], default: 'all' },
+          },
+          {
+            in: 'query',
+            name: 'records',
+            description: 'Limits the page to patients who do or do not have a clinical record.',
+            schema: { type: 'string', enum: ['all', 'has', 'none'], default: 'all' },
+          },
+        ],
+        responses: {
+          '200': {
+            description: 'One page of the directory, scoped to the caller.',
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  properties: {
+                    patients: { type: 'array', items: { type: 'object', additionalProperties: true } },
+                    patientProfiles: { type: 'array', items: { type: 'object', additionalProperties: true } },
+                    patientPayments: { type: 'array', items: { type: 'object', additionalProperties: true } },
+                    counts: {
+                      type: 'object',
+                      description: 'Directory-wide tallies for the filter menu, under the search and status already applied.',
+                      properties: {
+                        withRecords: { type: 'integer' },
+                        withoutRecords: { type: 'integer' },
+                      },
+                    },
+                    page: { type: 'integer' },
+                    pageSize: { type: 'integer' },
+                    records: { type: 'string' },
+                    search: { type: 'string' },
+                    status: { type: 'string' },
+                    total: { type: 'integer', description: 'Patients matching every filter, across all pages.' },
+                    totalPages: { type: 'integer' },
+                  },
                 },
               },
             },

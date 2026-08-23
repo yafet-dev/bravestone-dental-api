@@ -16,6 +16,7 @@
     "migrate:roles": "tsx scripts/migrate-roles.ts",
     "reconcile:roles": "tsx scripts/reconcile-snapshot-roles.ts",
     "lint": "prisma generate && tsc --noEmit",
+    "test": "tsx --test tests/*.test.ts",
     "storage:records": "tsx scripts/setup-records-bucket.ts",
     "migrate:attachments": "tsx scripts/migrate-record-attachments.ts",
     "verify:attachments": "tsx scripts/verify-attachments.mts"
