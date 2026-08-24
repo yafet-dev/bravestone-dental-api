@@ -279,8 +279,8 @@ export const openApiDocument = {
     '/api/auth/register': {
       post: {
         tags: ['Auth'],
-        summary: 'Create an account and email a verification link',
-        description: 'The account is created even when the email cannot be delivered; check `verification.sent`.',
+        summary: 'Create an account and email a four-digit signup code',
+        description: 'The account remains unverified until `/api/auth/verify-signup-otp` succeeds. Check `signupOtp.sent` for mail delivery.',
         operationId: 'postAuthRegister',
         requestBody: {
           required: true,
@@ -300,20 +300,14 @@ export const openApiDocument = {
         },
         responses: {
           '201': {
-            description: 'Account created. `verification.sent` reports whether the email left the relay.',
+            description: 'Account created and a short-lived OTP challenge issued.',
             content: {
               'application/json': {
                 schema: {
                   type: 'object',
                   properties: {
                     user: { $ref: '#/components/schemas/PublicUser' },
-                    verification: {
-                      type: 'object',
-                      properties: {
-                        sent: { type: 'boolean' },
-                        error: { type: 'string' },
-                      },
-                    },
+                    signupOtp: { $ref: '#/components/schemas/SignupOtpChallenge' },
                   },
                 },
               },
@@ -321,6 +315,74 @@ export const openApiDocument = {
           },
           '400': { $ref: '#/components/responses/AuthError' },
           '409': { $ref: '#/components/responses/AuthError' },
+        },
+      },
+    },
+    '/api/auth/verify-signup-otp': {
+      post: {
+        tags: ['Auth'],
+        summary: 'Finish signup with a four-digit email code',
+        description: 'Consumes the single-use challenge, verifies the email, and opens a session. A challenge expires after 10 minutes or five incorrect guesses.',
+        operationId: 'postAuthVerifySignupOtp',
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['challengeId', 'code'],
+                properties: {
+                  challengeId: { type: 'string' },
+                  code: { type: 'string', pattern: '^\\d{4}$' },
+                },
+              },
+            },
+          },
+        },
+        responses: {
+          '200': { $ref: '#/components/responses/SessionResponse' },
+          '400': { $ref: '#/components/responses/AuthError' },
+          '429': { $ref: '#/components/responses/AuthError' },
+        },
+      },
+    },
+    '/api/auth/resend-signup-otp': {
+      post: {
+        tags: ['Auth'],
+        summary: 'Email a fresh four-digit signup code',
+        description: 'Issues a replacement challenge subject to a 60-second cooldown and five-email hourly account cap.',
+        operationId: 'postAuthResendSignupOtp',
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['email'],
+                properties: { email: { type: 'string', format: 'email' } },
+              },
+            },
+          },
+        },
+        responses: {
+          '200': {
+            description: 'Replacement challenge request accepted.',
+            content: {
+              'application/json': {
+                schema: {
+                  allOf: [
+                    { $ref: '#/components/schemas/SignupOtpChallenge' },
+                    {
+                      type: 'object',
+                      properties: { delivered: { type: 'boolean' } },
+                    },
+                  ],
+                },
+              },
+            },
+          },
+          '400': { $ref: '#/components/responses/AuthError' },
+          '429': { $ref: '#/components/responses/AuthError' },
         },
       },
     },
@@ -1319,6 +1381,56 @@ export const openApiDocument = {
         },
       },
     },
+    '/api/clinic/users/{userId}': {
+      delete: {
+        tags: ['Clinic'],
+        summary: 'Permanently remove a user from the caller’s clinic',
+        description: 'Clinic-admin only. Deletes the database user, revokes pending invitations, cascades authentication sessions and credentials, and removes the member from the workspace roster. The caller cannot delete their own account or a platform administrator.',
+        operationId: 'deleteClinicUser',
+        security: [{ bearerAuth: [] }],
+        parameters: [
+          {
+            in: 'path',
+            name: 'userId',
+            required: true,
+            schema: { type: 'string' },
+          },
+        ],
+        requestBody: {
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                properties: {
+                  email: { type: 'string', format: 'email', description: 'Safe fallback for a newly invited browser row whose temporary id differs from the database id.' },
+                },
+              },
+            },
+          },
+        },
+        responses: {
+          '200': {
+            description: 'The database user and clinic roster entry were deleted.',
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  properties: {
+                    deleted: { type: 'boolean', enum: [true] },
+                    user: { type: 'object', additionalProperties: true },
+                  },
+                },
+              },
+            },
+          },
+          '400': { $ref: '#/components/responses/AuthError' },
+          '401': { $ref: '#/components/responses/AuthError' },
+          '403': { $ref: '#/components/responses/AuthError' },
+          '404': { $ref: '#/components/responses/AuthError' },
+          '409': { $ref: '#/components/responses/AuthError' },
+        },
+      },
+    },
     '/api/clinic/patients/directory': {
       get: {
         tags: ['Clinic'],
@@ -1651,7 +1763,7 @@ export const openApiDocument = {
         type: 'http',
         scheme: 'bearer',
         bearerFormat: 'JWT',
-        description: 'Session token returned by completed login, non-MFA verify-email, two-factor verification, invitation-accept, password-change, and two-factor credential-management endpoints.',
+        description: 'Session token returned by completed login, signup OTP or email verification, two-factor verification, invitation-accept, password-change, and two-factor credential-management endpoints.',
       },
     },
     responses: {
@@ -1698,6 +1810,17 @@ export const openApiDocument = {
       },
     },
     schemas: {
+      SignupOtpChallenge: {
+        type: 'object',
+        required: ['challengeId', 'expiresIn', 'retryAfterSeconds', 'sent'],
+        properties: {
+          challengeId: { type: 'string', description: 'Opaque id paired with the emailed code.' },
+          expiresIn: { type: 'integer', example: 600 },
+          retryAfterSeconds: { type: 'integer', example: 60 },
+          sent: { type: 'boolean' },
+          error: { type: 'string', description: 'Present when the relay refused the message.' },
+        },
+      },
       HealthResponse: {
         type: 'object',
         required: ['status', 'service', 'uptime', 'timestamp', 'attachmentStorage'],

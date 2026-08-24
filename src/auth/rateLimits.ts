@@ -107,6 +107,37 @@ export const emailDispatchRateLimit = rateLimit({
 });
 
 /**
+ * A tighter signup-mail budget, keyed by both destination and client. The
+ * database adds a per-account cooldown and hourly ceiling, so this remains
+ * effective even if requests arrive through several API instances.
+ */
+export const signupOtpDispatchRateLimit = rateLimit({
+  ...sharedOptions,
+  windowMs: oneHour,
+  limit: 5,
+  skipFailedRequests: true,
+  keyGenerator: (request) => `${ipKeyGenerator(request.ip || '')}::${readSubmittedEmail(request)}`,
+  handler: buildHandler('Too many signup codes were requested for this email.'),
+});
+
+/** The database independently burns a challenge after five incorrect codes. */
+export const signupOtpVerificationRateLimit = rateLimit({
+  ...sharedOptions,
+  windowMs: fifteenMinutes,
+  limit: 5,
+  skipSuccessfulRequests: true,
+  keyGenerator: (request) => {
+    const challengeId = (request.body as { challengeId?: unknown } | undefined)?.challengeId;
+    const challengeKey = typeof challengeId === 'string' && challengeId
+      ? createHash('sha256').update(challengeId).digest('hex')
+      : 'missing';
+
+    return `${ipKeyGenerator(request.ip || '')}::${challengeKey}`;
+  },
+  handler: buildHandler('Too many incorrect signup-code attempts.'),
+});
+
+/**
  * Authenticated MFA changes require the account password and are keyed by both
  * actor and client address. Successful setup/status actions do not consume the
  * guessing budget.

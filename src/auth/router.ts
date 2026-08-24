@@ -6,15 +6,19 @@ import {
   loginWithPassword,
   registerAccount,
   requestPasswordReset,
+  resendSignupOtp,
   resendVerificationEmail,
   resetPasswordWithToken,
   verifyEmailAddress,
+  verifySignupOtp,
 } from './accounts';
 import { sendAuthError } from './errors';
 import {
   accountCredentialRateLimit,
   credentialRateLimit,
   emailDispatchRateLimit,
+  signupOtpDispatchRateLimit,
+  signupOtpVerificationRateLimit,
   twoFactorLoginRateLimit,
   twoFactorSecurityRateLimit,
 } from './rateLimits';
@@ -42,7 +46,7 @@ function preventSensitiveResponseCaching(response: Response) {
   response.set('Pragma', 'no-cache');
 }
 
-authRouter.post('/register', emailDispatchRateLimit, credentialRateLimit, async (request, response, next) => {
+authRouter.post('/register', emailDispatchRateLimit, signupOtpDispatchRateLimit, credentialRateLimit, async (request, response, next) => {
   try {
     const result = await registerAccount({
       email: request.body?.email,
@@ -50,9 +54,34 @@ authRouter.post('/register', emailDispatchRateLimit, credentialRateLimit, async 
       password: request.body?.password,
     });
 
-    // The account exists either way; `verification.sent` tells the caller whether
+    // The account exists either way; `signupOtp.sent` tells the caller whether
     // the email actually left the building.
     response.status(201).json(result);
+  } catch (error) {
+    if (!sendAuthError(error, response)) {
+      next(error);
+    }
+  }
+});
+
+authRouter.post('/verify-signup-otp', signupOtpVerificationRateLimit, credentialRateLimit, async (request, response, next) => {
+  try {
+    preventSensitiveResponseCaching(response);
+    response.json(await verifySignupOtp({
+      challengeId: request.body?.challengeId,
+      code: request.body?.code,
+      sessionMetadata: readSessionClientMetadata(request),
+    }));
+  } catch (error) {
+    if (!sendAuthError(error, response)) {
+      next(error);
+    }
+  }
+});
+
+authRouter.post('/resend-signup-otp', emailDispatchRateLimit, signupOtpDispatchRateLimit, async (request, response, next) => {
+  try {
+    response.json(await resendSignupOtp(request.body?.email));
   } catch (error) {
     if (!sendAuthError(error, response)) {
       next(error);

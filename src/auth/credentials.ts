@@ -1,4 +1,4 @@
-import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
+import { createHash, createHmac, randomBytes, randomInt, timingSafeEqual } from 'node:crypto';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 
@@ -7,6 +7,7 @@ const sessionTtlSeconds = 60 * 60 * 24 * 7; // 7 days
 export const minimumPasswordLength = 8;
 
 export const emailVerificationTtlMs = 24 * 60 * 60 * 1000;
+export const signupOtpTtlMs = 10 * 60 * 1000;
 export const passwordResetTtlMs = 60 * 60 * 1000;
 export const invitationTtlMs = 7 * 24 * 60 * 60 * 1000;
 
@@ -125,6 +126,33 @@ export function createEmailToken() {
 
 export function hashEmailToken(token: string) {
   return createHash('sha256').update(token).digest('hex');
+}
+
+/**
+ * Creates a human-readable signup code and a separate high-entropy challenge id.
+ * Including the id in the keyed digest means equal four-digit codes never have
+ * equal stored values, while the server-side key prevents offline guessing if
+ * the challenge table is ever exposed.
+ */
+export function createSignupOtp() {
+  const challengeId = randomBytes(24).toString('base64url');
+  const code = randomInt(0, 10_000).toString().padStart(4, '0');
+
+  return {
+    challengeId,
+    code,
+    codeHash: hashSignupOtp(challengeId, code),
+  };
+}
+
+export function hashSignupOtp(challengeId: string, code: string) {
+  return createHmac('sha256', `bravestone-signup-otp::${getSessionSecret()}`)
+    .update(`${challengeId}:${code}`)
+    .digest('hex');
+}
+
+export function isFourDigitSignupOtp(value: unknown): value is string {
+  return typeof value === 'string' && /^\d{4}$/.test(value.trim());
 }
 
 export function emailTokensMatch(left: string, right: string) {

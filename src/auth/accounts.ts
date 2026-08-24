@@ -1,16 +1,21 @@
 import type { User } from '@prisma/client';
 import { prisma } from '../db';
 import { sendMail, type MailResult } from '../mail/mailer';
-import { buildPasswordResetEmail, buildVerificationEmail } from '../mail/templates';
+import { buildPasswordResetEmail, buildSignupOtpEmail, buildVerificationEmail } from '../mail/templates';
 import {
   createEmailToken,
+  createSignupOtp,
   describePasswordIssue,
   emailVerificationTtlMs,
+  emailTokensMatch,
   hashEmailToken,
   hashPassword,
+  hashSignupOtp,
   isValidEmail,
+  isFourDigitSignupOtp,
   normalizeEmail,
   passwordResetTtlMs,
+  signupOtpTtlMs,
   verifyPassword,
 } from './credentials';
 import { AuthError } from './errors';
@@ -27,6 +32,9 @@ export { toPublicUser, type PublicUser } from './sessions';
 
 export const emailVerificationTokenType = 'email_verify';
 export const passwordResetTokenType = 'password_reset';
+const maximumSignupOtpAttempts = 5;
+const maximumSignupOtpEmailsPerHour = 5;
+const signupOtpResendCooldownMs = 60 * 1000;
 
 function normalizeFullName(fullName: unknown, email: string) {
   const trimmed = typeof fullName === 'string' ? fullName.trim().replace(/\s+/g, ' ') : '';
@@ -85,6 +93,63 @@ export async function sendVerificationEmail(user: User): Promise<MailResult> {
   return sendMail({ to: user.email, ...email });
 }
 
+async function sendSignupOtp(user: User) {
+  const now = new Date();
+  const oneHourAgo = new Date(now.getTime() - 60 * 60 * 1000);
+  const { challengeId, code, codeHash } = createSignupOtp();
+  const expiresAt = new Date(now.getTime() + signupOtpTtlMs);
+
+  await prisma.$transaction(async (transaction) => {
+    if (!(await lockUserSecurityState(transaction, user.id))) {
+      throw new AuthError(404, 'user_not_found', 'This account no longer exists.');
+    }
+
+    const latestChallenge = await transaction.signupOtpChallenge.findFirst({
+      where: { userId: user.id },
+      orderBy: { createdAt: 'desc' },
+      select: { createdAt: true },
+    });
+    const sentInLastHour = await transaction.signupOtpChallenge.count({
+      where: { userId: user.id, createdAt: { gte: oneHourAgo } },
+    });
+
+    if (
+      latestChallenge
+      && now.getTime() - latestChallenge.createdAt.getTime() < signupOtpResendCooldownMs
+    ) {
+      const seconds = Math.ceil(
+        (signupOtpResendCooldownMs - (now.getTime() - latestChallenge.createdAt.getTime())) / 1000,
+      );
+      throw new AuthError(429, 'signup_otp_resend_wait', `Please wait ${seconds} seconds before asking for another code.`);
+    }
+
+    if (sentInLastHour >= maximumSignupOtpEmailsPerHour) {
+      throw new AuthError(429, 'signup_otp_email_limit', 'Too many signup codes were requested. Try again in about one hour.');
+    }
+
+    await transaction.signupOtpChallenge.updateMany({
+      where: { userId: user.id, consumedAt: null },
+      data: { consumedAt: now },
+    });
+    await transaction.signupOtpChallenge.create({
+      data: { id: challengeId, userId: user.id, codeHash, expiresAt },
+    });
+  });
+
+  const delivery = await sendMail({
+    to: user.email,
+    ...buildSignupOtpEmail({ code, email: user.email, fullName: user.fullName }),
+  });
+
+  return {
+    challengeId,
+    expiresIn: Math.round(signupOtpTtlMs / 1000),
+    retryAfterSeconds: Math.round(signupOtpResendCooldownMs / 1000),
+    sent: delivery.ok,
+    ...(delivery.error ? { error: delivery.error } : {}),
+  };
+}
+
 export async function registerAccount(input: { email: unknown; fullName: unknown; password: unknown }) {
   const email = normalizeEmail(input.email);
   const password = typeof input.password === 'string' ? input.password : '';
@@ -139,15 +204,141 @@ export async function registerAccount(input: { email: unknown; fullName: unknown
     throw new AuthError(403, 'account_banned', 'This account has been suspended. Contact your clinic administrator.');
   }
 
-  const verification = await sendVerificationEmail(linkedUser);
+  const signupOtp = await sendSignupOtp(linkedUser);
 
   return {
     user: toPublicUser(linkedUser),
-    verification: {
-      sent: verification.ok,
-      ...(verification.error ? { error: verification.error } : {}),
-    },
+    signupOtp,
   };
+}
+
+export async function resendSignupOtp(rawEmail: unknown) {
+  const email = normalizeEmail(rawEmail);
+
+  if (!email || !isValidEmail(email)) {
+    throw new AuthError(400, 'invalid_email', 'Enter a valid email address.');
+  }
+
+  const user = await prisma.user.findUnique({ where: { email } });
+
+  if (!user || user.emailVerifiedAt || user.status === 'banned' || !user.passwordHash) {
+    // Keep account existence private while returning the same shape the browser
+    // expects. This challenge is deliberately not stored and can never verify.
+    return {
+      challengeId: createSignupOtp().challengeId,
+      delivered: true,
+      expiresIn: Math.round(signupOtpTtlMs / 1000),
+      retryAfterSeconds: Math.round(signupOtpResendCooldownMs / 1000),
+      sent: true,
+    };
+  }
+
+  const result = await sendSignupOtp(user);
+
+  return {
+    ...result,
+    delivered: result.sent,
+  };
+}
+
+export async function verifySignupOtp(input: {
+  challengeId: unknown;
+  code: unknown;
+  sessionMetadata: SessionClientMetadata;
+}) {
+  const challengeId = typeof input.challengeId === 'string' ? input.challengeId.trim() : '';
+  const code = isFourDigitSignupOtp(input.code) ? input.code.trim() : '';
+
+  if (!challengeId || !code) {
+    throw new AuthError(400, 'invalid_signup_code', 'Enter the four-digit code from your email.');
+  }
+
+  const challenge = await prisma.signupOtpChallenge.findUnique({
+    where: { id: challengeId },
+    select: { userId: true },
+  });
+
+  if (!challenge) {
+    throw new AuthError(400, 'invalid_signup_code', 'That code is not correct. Check the email and try again.');
+  }
+
+  const now = new Date();
+  const presentedCodeHash = hashSignupOtp(challengeId, code);
+  const verification = await prisma.$transaction(async (transaction) => {
+    if (!(await lockUserSecurityState(transaction, challenge.userId))) {
+      return { kind: 'expired' as const };
+    }
+
+    const currentChallenge = await transaction.signupOtpChallenge.findUnique({
+      where: { id: challengeId },
+      include: { user: true },
+    });
+
+    if (
+      !currentChallenge
+      || currentChallenge.consumedAt
+      || currentChallenge.expiresAt.getTime() <= now.getTime()
+      || currentChallenge.attemptCount >= maximumSignupOtpAttempts
+    ) {
+      return { kind: 'expired' as const };
+    }
+
+    if (!emailTokensMatch(currentChallenge.codeHash, presentedCodeHash)) {
+      const attemptCount = currentChallenge.attemptCount + 1;
+      await transaction.signupOtpChallenge.update({
+        where: { id: currentChallenge.id },
+        data: {
+          attemptCount,
+          ...(attemptCount >= maximumSignupOtpAttempts ? { consumedAt: now } : {}),
+        },
+      });
+
+      return {
+        kind: 'incorrect' as const,
+        attemptsRemaining: Math.max(0, maximumSignupOtpAttempts - attemptCount),
+      };
+    }
+
+    if (currentChallenge.user.status === 'banned') {
+      return { kind: 'banned' as const };
+    }
+
+    await transaction.signupOtpChallenge.updateMany({
+      where: { userId: currentChallenge.userId, consumedAt: null },
+      data: { consumedAt: now },
+    });
+    const updatedUser = await transaction.user.update({
+      where: { id: currentChallenge.userId },
+      data: {
+        authUserId: currentChallenge.user.authUserId || currentChallenge.user.id,
+        emailVerifiedAt: currentChallenge.user.emailVerifiedAt || now,
+        status: 'active',
+      },
+    });
+
+    return { kind: 'verified' as const, user: updatedUser };
+  });
+
+  if (verification.kind === 'expired') {
+    throw new AuthError(400, 'signup_otp_expired', 'This code has expired or has already been used. Ask for a new code.');
+  }
+
+  if (verification.kind === 'incorrect') {
+    const suffix = verification.attemptsRemaining === 1 ? 'try' : 'tries';
+    throw new AuthError(
+      400,
+      'invalid_signup_code',
+      verification.attemptsRemaining
+        ? `That code is not correct. You have ${verification.attemptsRemaining} ${suffix} left.`
+        : 'That code is not correct. Ask for a new code.',
+    );
+  }
+
+  if (verification.kind === 'banned') {
+    throw new AuthError(403, 'account_banned', 'This account has been suspended. Contact your clinic administrator.');
+  }
+
+  return buildAuthenticatedResponse(verification.user, false, input.sessionMetadata);
 }
 
 export async function verifyEmailAddress(token: unknown, sessionMetadata: SessionClientMetadata) {

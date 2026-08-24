@@ -172,6 +172,7 @@ model User {
   invitationsAccepted Invitation[]              @relation("InvitationAcceptedBy")
   invitationsSent     Invitation[]              @relation("InvitationInvitedBy")
   authTokens          AuthToken[]
+  signupOtpChallenges SignupOtpChallenge[]
   authSessions        AuthSession[]
   twoFactorCredential UserTwoFactorCredential?
   twoFactorChallenges TwoFactorLoginChallenge[]
@@ -225,6 +226,23 @@ model AuthToken {
   @@index([userId, type])
   @@index([expiresAt])
   @@map("auth_tokens")
+}
+
+/// Short-lived signup activation challenge. The four-digit code is stored as a
+/// keyed digest and every challenge has a database-enforced five-guess budget.
+model SignupOtpChallenge {
+  id           String    @id
+  userId       String
+  codeHash     String
+  attemptCount Int       @default(0)
+  expiresAt    DateTime
+  consumedAt   DateTime?
+  createdAt    DateTime  @default(now())
+  user         User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+  @@index([expiresAt])
+  @@map("signup_otp_challenges")
 }
 
 /// A user's authenticator-app credential. The shared TOTP secret is encrypted

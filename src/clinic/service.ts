@@ -24,6 +24,8 @@ import {
 import { extractAttachmentContents } from './attachments';
 import { scopeClinicStateForAccess } from './access';
 import { calculatePatientAge } from './patientAge';
+import { isSuperAdminRole } from './roles';
+import { removeClinicStaffUser } from './staffUsers';
 import {
   defaultFeaturesForRole,
   normalizeFeatureList,
@@ -2136,6 +2138,95 @@ export async function updateClinicServicePrices({
   `;
 
   return updated > 0 ? nextPrices : null;
+}
+
+/**
+ * Permanently removes one member of a clinic. This is intentionally a focused
+ * database mutation rather than a delayed workspace autosave: sessions and
+ * authentication credentials cascade with the User row, pending invitations
+ * are revoked, and the denormalized workspace roster is updated atomically.
+ */
+export async function deleteClinicUser(input: {
+  actorId: string;
+  actorRole: string;
+  email?: unknown;
+  organizationId: string;
+  userId: string;
+}) {
+  const userId = input.userId.trim();
+  const email = typeof input.email === 'string' ? input.email.trim().toLowerCase() : '';
+
+  if (!userId && !email) {
+    throw new AuthError(400, 'invalid_user', 'Choose a clinic user to remove.');
+  }
+
+  return prisma.$transaction(async (transaction) => {
+    const targetById = userId
+      ? await transaction.user.findFirst({
+          where: { id: userId, organizationId: input.organizationId },
+          select: { email: true, fullName: true, id: true, role: true },
+        })
+      : null;
+    // A just-invited browser row historically used a temporary id. Only fall
+    // back to its email when the submitted id is not a real member of this same
+    // organization; a valid id always wins deterministically.
+    const target = targetById || (email
+      ? await transaction.user.findFirst({
+          where: { email, organizationId: input.organizationId },
+          select: { email: true, fullName: true, id: true, role: true },
+        })
+      : null);
+
+    if (!target) {
+      throw new AuthError(404, 'clinic_user_not_found', 'That user is no longer part of this clinic.');
+    }
+
+    if (target.id === input.actorId) {
+      throw new AuthError(400, 'cannot_remove_self', 'You cannot remove your own signed-in account.');
+    }
+
+    if (isSuperAdminRole(target.role) && !isSuperAdminRole(input.actorRole)) {
+      throw new AuthError(403, 'forbidden', 'Clinic administrators cannot remove platform administrators.');
+    }
+
+    const workspace = await transaction.clinicWorkspaceState.findUnique({
+      where: { organizationId: input.organizationId },
+      select: { id: true, staffUsers: true },
+    });
+    const staffUsers = Array.isArray(workspace?.staffUsers)
+      ? workspace.staffUsers as ClinicStaffUser[]
+      : [];
+
+    // An unused invitation would otherwise let a removed, not-yet-activated
+    // member recreate access with the old email link.
+    await transaction.invitation.deleteMany({
+      where: {
+        email: target.email,
+        organizationId: input.organizationId,
+        status: { not: 'accepted' },
+      },
+    });
+
+    const deleted = await transaction.user.deleteMany({
+      where: { id: target.id, organizationId: input.organizationId },
+    });
+
+    if (deleted.count !== 1) {
+      throw new AuthError(409, 'clinic_user_changed', 'That user changed while being removed. Refresh and try again.');
+    }
+
+    if (workspace) {
+      await transaction.clinicWorkspaceState.update({
+        where: { id: workspace.id },
+        data: { staffUsers: toJsonValue(removeClinicStaffUser(staffUsers, target)) },
+      });
+    }
+
+    return {
+      deleted: true as const,
+      user: { email: target.email, id: target.id, name: target.fullName },
+    };
+  });
 }
 
 export async function replaceClinicState(

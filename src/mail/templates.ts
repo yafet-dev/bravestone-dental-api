@@ -24,8 +24,9 @@ function escapeHtml(value: string) {
 }
 
 type EmailLayoutInput = {
-  actionLabel: string;
-  actionUrl: string;
+  actionLabel?: string;
+  actionUrl?: string;
+  code?: string;
   footerNote: string;
   greeting: string;
   intro: string;
@@ -59,7 +60,48 @@ const palette = {
 const fontStack = "-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif";
 
 function renderLayout(input: EmailLayoutInput) {
-  const safeActionUrl = escapeHtml(input.actionUrl);
+  const safeActionUrl = escapeHtml(input.actionUrl || '');
+  const action = input.actionLabel && input.actionUrl
+    ? `<tr>
+              <td style="padding:28px 40px 0 40px;">
+                <!-- Table-wrapped so the background and padding survive Outlook,
+                     which ignores padding on a styled anchor. -->
+                <table role="presentation" cellpadding="0" cellspacing="0" border="0">
+                  <tr>
+                    <td align="center" bgcolor="${palette.accent}" style="border-radius:8px;">
+                      <a href="${safeActionUrl}" style="display:inline-block;padding:14px 30px;font-family:${fontStack};font-size:15px;font-weight:600;line-height:1.2;color:#ffffff;text-decoration:none;border-radius:8px;">${escapeHtml(input.actionLabel)}</a>
+                    </td>
+                  </tr>
+                </table>
+              </td>
+            </tr>
+            <tr>
+              <td style="padding:28px 40px 0 40px;">
+                <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color:${palette.linkPanel};border:1px solid ${palette.border};border-radius:8px;">
+                  <tr>
+                    <td style="padding:14px 16px;">
+                      <p style="margin:0;font-size:12px;line-height:1.5;color:${palette.muted};">If the button does not work, copy this link into your browser:</p>
+                      <p style="margin:6px 0 0 0;font-size:12px;line-height:1.6;word-break:break-all;"><a href="${safeActionUrl}" style="color:${palette.accent};text-decoration:underline;">${safeActionUrl}</a></p>
+                    </td>
+                  </tr>
+                </table>
+              </td>
+            </tr>`
+    : '';
+  const code = input.code
+    ? `<tr>
+              <td style="padding:28px 40px 0 40px;">
+                <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color:${palette.linkPanel};border:2px solid ${palette.accentRule};border-radius:12px;">
+                  <tr>
+                    <td align="center" style="padding:24px 16px;">
+                      <p style="margin:0 0 8px 0;font-size:12px;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;color:${palette.muted};">Your signup code</p>
+                      <p style="margin:0;font-family:${fontStack};font-size:42px;font-weight:700;line-height:1.1;letter-spacing:0.28em;color:${palette.heading};">${escapeHtml(input.code)}</p>
+                    </td>
+                  </tr>
+                </table>
+              </td>
+            </tr>`
+    : '';
 
   return `<!doctype html>
 <html lang="en">
@@ -91,31 +133,8 @@ function renderLayout(input: EmailLayoutInput) {
                 <p style="margin:0;font-size:15px;line-height:1.65;color:${palette.body};mso-line-height-rule:exactly;">${escapeHtml(input.intro)}</p>
               </td>
             </tr>
-            <tr>
-              <td style="padding:28px 40px 0 40px;">
-                <!-- Table-wrapped so the background and padding survive Outlook,
-                     which ignores padding on a styled anchor. -->
-                <table role="presentation" cellpadding="0" cellspacing="0" border="0">
-                  <tr>
-                    <td align="center" bgcolor="${palette.accent}" style="border-radius:8px;">
-                      <a href="${safeActionUrl}" style="display:inline-block;padding:14px 30px;font-family:${fontStack};font-size:15px;font-weight:600;line-height:1.2;color:#ffffff;text-decoration:none;border-radius:8px;">${escapeHtml(input.actionLabel)}</a>
-                    </td>
-                  </tr>
-                </table>
-              </td>
-            </tr>
-            <tr>
-              <td style="padding:28px 40px 0 40px;">
-                <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color:${palette.linkPanel};border:1px solid ${palette.border};border-radius:8px;">
-                  <tr>
-                    <td style="padding:14px 16px;">
-                      <p style="margin:0;font-size:12px;line-height:1.5;color:${palette.muted};">If the button does not work, copy this link into your browser:</p>
-                      <p style="margin:6px 0 0 0;font-size:12px;line-height:1.6;word-break:break-all;"><a href="${safeActionUrl}" style="color:${palette.accent};text-decoration:underline;">${safeActionUrl}</a></p>
-                    </td>
-                  </tr>
-                </table>
-              </td>
-            </tr>
+            ${code}
+            ${action}
             <tr>
               <td style="padding:26px 40px 32px 40px;">
                 <p style="margin:0;padding-top:20px;border-top:1px solid ${palette.divider};font-size:12px;line-height:1.65;color:${palette.muted};">${escapeHtml(input.footerNote)}</p>
@@ -144,12 +163,29 @@ function renderPlainText(input: EmailLayoutInput) {
     '',
     input.intro,
     '',
-    `${input.actionLabel}: ${input.actionUrl}`,
-    '',
+    ...(input.code ? [`Your signup code: ${input.code}`, ''] : []),
+    ...(input.actionLabel && input.actionUrl ? [`${input.actionLabel}: ${input.actionUrl}`, ''] : []),
     input.footerNote,
     '',
     brandName,
   ].join('\n');
+}
+
+export function buildSignupOtpEmail(input: { code: string; email: string; fullName?: string | null }) {
+  const layout: EmailLayoutInput = {
+    code: input.code,
+    footerNote: `This code expires in 10 minutes and works once. ${brandName} will never ask you to share it. If you did not create an account, ignore this email.`,
+    greeting: `Hi ${firstNameFrom(input.fullName, input.email)},`,
+    intro: `Enter this four-digit code on the signup screen to finish creating your ${brandName} account.`,
+    preheader: `${input.code} is your ${brandName} signup code.`,
+    title: 'Finish creating your account',
+  };
+
+  return {
+    subject: `${input.code} is your ${brandName} signup code`,
+    html: renderLayout(layout),
+    text: renderPlainText(layout),
+  };
 }
 
 function firstNameFrom(fullName: string | null | undefined, email: string) {

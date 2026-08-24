@@ -39,6 +39,7 @@ import {
 } from '../priceBoard/service';
 import { isClinicAdminRole } from './roles';
 import {
+  deleteClinicUser,
   generateClinicAssistantReply,
   generateClinicReportInsights,
   getClinicRolePermissions,
@@ -285,6 +286,36 @@ clinicRouter.get('/bootstrap', async (request, response, next) => {
     );
   } catch (error) {
     next(error);
+  }
+});
+
+clinicRouter.delete('/users/:userId', async (request, response, next) => {
+  try {
+    const context = await resolveClinicRequestContext(request, response);
+
+    if (!context) {
+      return;
+    }
+
+    if (!context.access.canManageClinic) {
+      response.status(403).json({
+        code: 'forbidden',
+        message: 'Only a clinic administrator can remove clinic users.',
+      });
+      return;
+    }
+
+    response.json(await deleteClinicUser({
+      actorId: request.actor!.id,
+      actorRole: request.actor!.role,
+      email: request.body?.email,
+      organizationId: context.organizationId,
+      userId: request.params.userId || '',
+    }));
+  } catch (error) {
+    if (!sendAuthError(error, response)) {
+      next(error);
+    }
   }
 });
 
