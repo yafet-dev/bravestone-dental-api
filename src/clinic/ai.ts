@@ -129,10 +129,34 @@ export function isClinicScopedMessage(state: ClinicWorkspaceState, message: stri
 }
 
 function formatCurrency(amount: number) {
-  return new Intl.NumberFormat('en-US', {
-    currency: 'USD',
-    style: 'currency',
-  }).format(amount);
+  return `${new Intl.NumberFormat('en-US', {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  }).format(amount)} ETB`;
+}
+
+export function normalizeInsightCurrencyText(value: string) {
+  return value
+    .replace(/\b(?:USD|US\s*\$)\s*([0-9][\d,]*(?:\.\d+)?(?:\s*[KMB])?)/gi, '$1 ETB')
+    .replace(/\$\s*([0-9][\d,]*(?:\.\d+)?(?:\s*[KMB])?)/gi, '$1 ETB');
+}
+
+export function normalizeClinicReportInsightsCurrency(
+  insights: ClinicAIReportInsightSet
+): ClinicAIReportInsightSet {
+  const normalizeCards = (cards: ClinicAIInsightCard[]) => cards.map((card) => ({
+    ...card,
+    value: normalizeInsightCurrencyText(card.value),
+    helper: normalizeInsightCurrencyText(card.helper),
+  }));
+
+  return {
+    ...insights,
+    dashboard: normalizeCards(insights.dashboard),
+    executive: normalizeCards(insights.executive),
+    financial: normalizeCards(insights.financial),
+    performance: normalizeCards(insights.performance),
+  };
 }
 
 function toTimestamp(value: string) {
@@ -269,8 +293,8 @@ function getInsightCards(value: unknown, fallback: ClinicAIInsightCard[]) {
         ? sanitizeId(candidate.id)
         : defaultCard.id,
       title,
-      value: valueText,
-      helper,
+      value: normalizeInsightCurrencyText(valueText),
+      helper: normalizeInsightCurrencyText(helper),
       tone: getInsightTone(candidate.tone, defaultCard.tone),
     };
   });
@@ -996,7 +1020,7 @@ export async function requestClinicReportInsightsAI(
 } | null> {
   const fallbackInsights = buildClinicFallbackReportInsights(state);
   const response = await requestDeepSeekJson(
-    'You are the Bravestone Dental executive reporting assistant. Use only the provided clinic data. If a detail is missing, keep the wording grounded and conservative. Respond with JSON only.',
+    'You are the Bravestone Dental executive reporting assistant. Use only the provided clinic data. If a detail is missing, keep the wording grounded and conservative. The clinic currency is Ethiopian birr (ETB): format every monetary amount as "1,234.00 ETB" and never use $, USD, or another currency. Respond with JSON only.',
     [
       'Return a JSON object with exactly these keys:',
       '{"dashboard":[card],"executive":[card],"financial":[card],"performance":[card],"memory_summary":"string","focus_areas":["string"]}',

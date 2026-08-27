@@ -1823,7 +1823,7 @@ export const openApiDocument = {
       },
       HealthResponse: {
         type: 'object',
-        required: ['status', 'service', 'uptime', 'timestamp', 'attachmentStorage'],
+        required: ['status', 'service', 'uptime', 'timestamp'],
         properties: {
           status: {
             type: 'string',
@@ -1840,26 +1840,6 @@ export const openApiDocument = {
           timestamp: {
             type: 'string',
             format: 'date-time',
-          },
-          mail: {
-            type: 'object',
-            description: 'SMTP relay configuration used for every outbound email.',
-            properties: {
-              configured: { type: 'boolean' },
-              host: { type: 'string', nullable: true },
-              port: { type: 'integer' },
-              from: { type: 'string', nullable: true },
-              issue: { type: 'string', nullable: true },
-            },
-          },
-          attachmentStorage: {
-            type: 'object',
-            required: ['configured', 'driver', 'localFallbackAllowed'],
-            properties: {
-              configured: { type: 'boolean' },
-              driver: { type: 'string', enum: ['supabase', 'local'] },
-              localFallbackAllowed: { type: 'boolean' },
-            },
           },
         },
       },

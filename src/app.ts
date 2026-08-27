@@ -3,17 +3,24 @@ import express, { NextFunction, Request, Response } from 'express';
 import swaggerUi from 'swagger-ui-express';
 import { adminRouter } from './admin/router';
 import { authRouter } from './auth/router';
-import { describeAttachmentStorage } from './clinic/patientAttachments';
 import { clinicRouter } from './clinic/router';
 import { discoveryRouter } from './discovery/router';
 import { invitationsRouter } from './invitations/router';
-import { getSmtpConfigIssue, getSmtpSettings } from './mail/mailer';
 import { openApiDocument } from './openapi';
 import { publicPriceBoardRouter } from './priceBoard/router';
 import { avatarsRoot } from './users/avatars';
 import { usersRouter } from './users/router';
 
 const serviceName = 'bravestone-dental-api';
+
+export function buildPublicHealthPayload() {
+  return {
+    status: 'ok' as const,
+    service: serviceName,
+    uptime: Number(process.uptime().toFixed(3)),
+    timestamp: new Date().toISOString(),
+  };
+}
 
 export function createApp() {
   const app = express();
@@ -46,24 +53,7 @@ export function createApp() {
   });
 
   app.get('/health', (_request, response) => {
-    const smtpSettings = getSmtpSettings();
-    const smtpIssue = getSmtpConfigIssue(smtpSettings);
-
-    response.json({
-      status: 'ok',
-      service: serviceName,
-      uptime: Number(process.uptime().toFixed(3)),
-      timestamp: new Date().toISOString(),
-      attachmentStorage: describeAttachmentStorage(),
-      mail: {
-        configured: smtpIssue === null,
-        host: smtpSettings.host || null,
-        port: smtpSettings.port,
-        // Never echo SMTP_PASS; the sender address is enough to confirm the wiring.
-        from: smtpSettings.from || null,
-        issue: smtpIssue,
-      },
-    });
+    response.json(buildPublicHealthPayload());
   });
 
   app.get('/openapi.json', (_request, response) => {

@@ -12,6 +12,7 @@ import {
   isClinicAIReportInsightSetFresh,
   isClinicScopedMessage,
   isConversationalCourtesy,
+  normalizeClinicReportInsightsCurrency,
   requestClinicAssistantAI,
   requestClinicReportInsightsAI,
 } from './ai';
@@ -3220,9 +3221,10 @@ export async function generateClinicReportInsights(
   const existingMemory = state.organizationProfile.aiMemory;
 
   if (isClinicAIReportInsightSetFresh(existingMemory?.reportInsights)) {
+    const insights = normalizeClinicReportInsightsCurrency(existingMemory!.reportInsights!);
     return {
-      insights: existingMemory!.reportInsights!,
-      memory: existingMemory!,
+      insights,
+      memory: { ...existingMemory!, reportInsights: insights },
     };
   }
 
