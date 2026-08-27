@@ -106,6 +106,18 @@ export const emailDispatchRateLimit = rateLimit({
   handler: buildHandler('Too many emails requested from this device.'),
 });
 
+/** Appointment confirmations are routine clinic traffic and need a larger
+ * organization-wide allowance than account recovery or invitation mail. */
+export const appointmentEmailDispatchRateLimit = rateLimit({
+  ...sharedOptions,
+  windowMs: oneHour,
+  limit: 120,
+  skipFailedRequests: true,
+  keyGenerator: (request) => request.actor?.organizationId
+    || ipKeyGenerator(request.ip || ''),
+  handler: buildHandler('Too many appointment emails were requested for this clinic.'),
+});
+
 /**
  * A tighter signup-mail budget, keyed by both destination and client. The
  * database adds a per-account cooldown and hourly ceiling, so this remains

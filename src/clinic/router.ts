@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import express, { Router, type NextFunction, type Request, type Response } from 'express';
 import { sendAuthError } from '../auth/errors';
 import { requireAuth, requireSignedSessionToken } from '../auth/middleware';
+import { appointmentEmailDispatchRateLimit } from '../auth/rateLimits';
 import { prisma } from '../db';
 import {
   mergeClinicStateForAccess,
@@ -10,6 +11,7 @@ import {
   scopeClinicStateForOnboarding,
 } from './access';
 import { loadAiBudget } from './aiBudget';
+import { sendPatientAppointmentEmail, type AppointmentEmailKind } from './appointmentEmail';
 import { careHandoffsRouter } from './handoffs/router';
 import { notifyTreatmentPrice } from './handoffs/store';
 import {
@@ -356,6 +358,55 @@ clinicRouter.get('/patients/directory', async (request, response, next) => {
     next(error);
   }
 });
+
+clinicRouter.post(
+  '/appointments/:appointmentId/email',
+  appointmentEmailDispatchRateLimit,
+  async (request, response, next) => {
+    try {
+      const context = await resolveClinicRequestContext(request, response);
+
+      if (!context) {
+        return;
+      }
+
+      if (!requireFeature(context.access, 'appointments', response)) {
+        return;
+      }
+
+      const appointment = context.state.appointments.find((item) => (
+        item.id === request.params.appointmentId
+      ));
+
+      if (!appointment) {
+        response.status(404).json({ message: 'That appointment no longer exists.' });
+        return;
+      }
+
+      const kind: AppointmentEmailKind = request.body?.kind === 'updated'
+        ? 'updated'
+        : 'confirmed';
+      const delivery = await sendPatientAppointmentEmail({
+        appointment,
+        kind,
+        state: context.state,
+      });
+
+      response.json({
+        delivery: {
+          sent: delivery.ok && !delivery.skipped,
+          ...(delivery.skipped ? { skipped: true } : {}),
+          ...(delivery.skipReason ? { reason: delivery.skipReason } : {}),
+          ...(delivery.error ? { error: delivery.error } : {}),
+        },
+      });
+    } catch (error) {
+      if (!sendAuthError(error, response)) {
+        next(error);
+      }
+    }
+  },
+);
 
 clinicRouter.put('/patients/:patientId/treatment-charges', async (request, response, next) => {
   try {
