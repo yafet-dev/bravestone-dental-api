@@ -120,7 +120,7 @@ export const clinicSeedState: ClinicWorkspaceState = {
           id: 'NOTE-2',
           date: '2026-04-29T15:10:00.000Z',
           note: 'Patient asked for a written post-op summary before the next visit.',
-          user: 'Nurse / Assistant',
+          user: 'Receptionist',
         },
       ],
       emergencyContacts: [
@@ -357,7 +357,7 @@ export const clinicSeedState: ClinicWorkspaceState = {
   forms: [
     { id: 'FORM-12', patientId: 'p1', patient: 'Eleanor Fant', type: 'Treatment Consent', status: 'Signed', owner: 'Dr. Julianne Kim', updated: '2026-04-15' },
     { id: 'FORM-11', patientId: 'p3', patient: 'Sarah Chen', type: 'Medical Declaration', status: 'Review', owner: 'Reception', updated: '2026-04-29' },
-    { id: 'FORM-10', patientId: 'p2', patient: 'Marcus Holloway', type: 'Post-op Instructions', status: 'Sent', owner: 'Nurse / Assistant', updated: '2026-04-14' },
+    { id: 'FORM-10', patientId: 'p2', patient: 'Marcus Holloway', type: 'Post-op Instructions', status: 'Sent', owner: 'Receptionist', updated: '2026-04-14' },
   ],
   sickLeaves: [
     { id: 'SL-308', patientId: 'p1', doctorId: 'd1', patient: 'Eleanor Fant', doctor: 'Dr. Julianne Kim', diagnosis: 'Post restorative procedure recovery', start: '2026-04-15', end: '2026-04-16', status: 'Printed' },
@@ -373,30 +373,25 @@ export const clinicSeedState: ClinicWorkspaceState = {
   staffUsers: [
     { id: 'u1', name: 'Amara Wells', email: 'amara@bravestonelabs.com', role: 'clinic_admin', status: 'Active', lastActive: '8 min ago', branchId: 'main', phone: '+251 91 100 0001', defaultBranchId: 'main', emailSignature: 'Amara Wells\nClinic Admin\nBright Smile Dental Clinic', preferences: defaultClinicUserPreferences },
     { id: 'u2', name: 'Dr. Julianne Kim', email: 'julianne@bravestonelabs.com', role: 'dentist', status: 'Active', lastActive: 'Now', branchId: 'cmc', phone: '+251 91 100 0002', defaultBranchId: 'cmc', emailSignature: 'Dr. Julianne Kim\nDentist\nBright Smile Dental Clinic', preferences: defaultClinicUserPreferences },
-    { id: 'u3', name: 'Maya Patel', email: 'maya@bravestonelabs.com', role: 'cashier', status: 'Active', lastActive: '18 min ago', branchId: 'kazanchis', phone: '+251 91 100 0003', defaultBranchId: 'kazanchis', emailSignature: 'Maya Patel\nCashier\nBright Smile Dental Clinic', preferences: defaultClinicUserPreferences },
-    { id: 'u4', name: 'Noah Reed', email: 'noah@bravestonelabs.com', role: 'pharmacist', status: 'Active', lastActive: '1 hour ago', branchId: 'bole', phone: '+251 91 100 0004', defaultBranchId: 'bole', emailSignature: 'Noah Reed\nPharmacist\nBright Smile Dental Clinic', preferences: defaultClinicUserPreferences },
-    { id: 'u5', name: 'Lena Brooks', email: 'lena@bravestonelabs.com', role: 'nurse_assistant', status: 'Invited', lastActive: 'Pending', branchId: 'main', phone: '+251 91 100 0005', defaultBranchId: 'main', emailSignature: 'Lena Brooks\nNurse / Assistant\nBright Smile Dental Clinic', preferences: defaultClinicUserPreferences },
+    { id: 'u3', name: 'Maya Patel', email: 'maya@bravestonelabs.com', role: 'receptionist', status: 'Active', lastActive: '18 min ago', branchId: 'kazanchis', phone: '+251 91 100 0003', defaultBranchId: 'kazanchis', emailSignature: 'Maya Patel\nReceptionist\nBright Smile Dental Clinic', preferences: defaultClinicUserPreferences },
+    { id: 'u4', name: 'Dr. Noah Reed', email: 'noah@bravestonelabs.com', role: 'dentist', status: 'Active', lastActive: '1 hour ago', branchId: 'bole', phone: '+251 91 100 0004', defaultBranchId: 'bole', emailSignature: 'Dr. Noah Reed\nDentist\nBright Smile Dental Clinic', preferences: defaultClinicUserPreferences },
+    { id: 'u5', name: 'Lena Brooks', email: 'lena@bravestonelabs.com', role: 'receptionist', status: 'Invited', lastActive: 'Pending', branchId: 'main', phone: '+251 91 100 0005', defaultBranchId: 'main', emailSignature: 'Lena Brooks\nReceptionist\nBright Smile Dental Clinic', preferences: defaultClinicUserPreferences },
   ],
-  // The six roles a clinic admin can assign. Retired roles are absent here but
-  // still honoured for accounts that already hold one.
+  // Accounting is separate from reception so financial work does not imply
+  // appointment or clinical access.
   roles: [
     { role: 'clinic_admin', access: 'Every section, staff and role administration, patient payments and clinic finances' },
     { role: 'dentist', access: 'Patients, appointments, charting, prescriptions, sick leave, patient payments' },
-    { role: 'receptionist', access: 'Patients, appointments, doctors, sick leave, patient payments' },
-    { role: 'cashier', access: 'Patients and billing, including taking patient payments' },
-    { role: 'nurse_assistant', access: 'Patients, appointments, charting, sick leave' },
-    { role: 'accountant', access: 'Finance, billing and reports — amounts hidden until a clinic admin grants clinic finances' },
+    { role: 'receptionist', access: 'Patients, appointments, doctors, sick leave, billing, finance, reports, patient payments and clinic finances' },
+    { role: 'accountant', access: 'Patient accounts, billing, payments, finance, prices and financial reports' },
   ],
-  // Patient payments are on for the roles that take money at the chair or the
-  // front desk. Clinic finances — turnover, the expense ledger, per-doctor revenue
-  // — stay with the clinic admin until granted, which is what the accountant row
-  // is waiting for.
+  // Both money scopes are on for the receptionist as well as the admin, because
+  // the same person takes the payment and reconciles the day. The dentist keeps
+  // patient payments only: they price the treatment, they do not run the books.
   rolePermissions: [
     { role: 'clinic_admin', features: defaultFeaturesForRole('clinic_admin') },
     { role: 'dentist', features: defaultFeaturesForRole('dentist') },
     { role: 'receptionist', features: defaultFeaturesForRole('receptionist') },
-    { role: 'cashier', features: defaultFeaturesForRole('cashier') },
-    { role: 'nurse_assistant', features: defaultFeaturesForRole('nurse_assistant') },
     { role: 'accountant', features: defaultFeaturesForRole('accountant') },
   ],
   branches: clinicBranches,

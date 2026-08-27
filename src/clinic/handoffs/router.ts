@@ -115,7 +115,6 @@ careHandoffsRouter.post('/dispatch', async (request, response, next) => {
     const canDispatch = access.canManageClinic || [
       'receptionist',
       'reception',
-      'branch_manager',
       'front_desk',
       'frontdesk',
     ].includes(access.role);
@@ -251,7 +250,7 @@ careHandoffsRouter.get('/stream', async (request, response, next) => {
         : [],
     });
     canReceiveTreatmentPrices = (
-      (access.role === 'receptionist' || access.role === 'cashier')
+      access.role === 'receptionist'
       && access.canViewPatientPayments
     );
   } catch (error) {

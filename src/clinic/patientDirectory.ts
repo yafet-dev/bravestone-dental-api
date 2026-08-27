@@ -475,18 +475,24 @@ export async function readPatientDirectoryPage({
   organizationId: string;
   query: PatientDirectoryQuery;
 }): Promise<PatientDirectoryPage> {
+  // Whether a patient has a diagnosis is clinical information in its own right.
+  // Accounting gets the directory for billing, but not this record-presence
+  // filter or its clinic-wide counts.
+  const effectiveQuery: PatientDirectoryQuery = access.role === 'accountant'
+    ? { ...query, records: 'all' }
+    : query;
   const relationalCount = await prisma.clinicPatient.count({ where: { organizationId } });
   const result = relationalCount === 0
-    ? await readLegacyDirectoryPage(organizationId, query)
+    ? await readLegacyDirectoryPage(organizationId, effectiveQuery)
     : await readRelationalDirectoryPage(
       organizationId,
-      query,
-      await readPatientIdsWithRecords(organizationId),
+      effectiveQuery,
+      access.role === 'accountant' ? [] : await readPatientIdsWithRecords(organizationId),
     );
 
   if (!result) {
     return {
-      ...query,
+      ...effectiveQuery,
       counts: { withRecords: 0, withoutRecords: 0 },
       patients: [],
       patientProfiles: [],
@@ -497,14 +503,16 @@ export async function readPatientDirectoryPage({
   }
 
   return {
-    ...query,
+    ...effectiveQuery,
     ...scopePatientSlices(result, access, actorId),
-    counts: result.counts,
+    counts: access.role === 'accountant'
+      ? { withRecords: 0, withoutRecords: result.total }
+      : result.counts,
     // The page asked for is reported back as asked for, not clamped: a filter can
     // empty the directory while the user sits on page four, and the screen can
     // then offer to go back to the first page instead of silently showing rows
     // under a page number that no longer exists.
-    page: query.page,
+    page: effectiveQuery.page,
     total: result.total,
     totalPages: Math.ceil(result.total / query.pageSize),
   };

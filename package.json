@@ -12,6 +12,7 @@
     "check:smtp": "tsx scripts/check-smtp.ts",
     "grant:super-admin": "tsx scripts/grant-super-admin.ts",
     "setup:storage": "tsx scripts/setup-storage.ts",
+    "migrate:clinic-roles": "tsx scripts/consolidate-clinic-roles.ts",
     "migrate:money-scopes": "tsx scripts/migrate-money-scopes.ts",
     "migrate:roles": "tsx scripts/migrate-roles.ts",
     "reconcile:roles": "tsx scripts/reconcile-snapshot-roles.ts",

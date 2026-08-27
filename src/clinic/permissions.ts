@@ -19,15 +19,16 @@
  *
  *   - {@link PATIENT_PAYMENTS_PERMISSION} — what one patient owes and has paid:
  *     balances, treatment prices, invoices, and recording a payment. The front
- *     desk and the cashier need this to do their job; a dentist needs it to
- *     discuss a treatment plan.
+ *     desk needs this to take the money; a dentist needs it to discuss a
+ *     treatment plan.
  *   - {@link CLINIC_FINANCES_PERMISSION} — how the business is doing: the
  *     income and expense ledger, revenue analytics, per-doctor revenue, owner
- *     reports, and the AI insight cards. This is the owner's view.
+ *     reports, and the AI insight cards.
  *
- * Splitting them is what lets a receptionist take a payment without also seeing
- * the clinic's turnover. Clinic finances stay admin-only unless granted; patient
- * payments are on by default for the roles that handle them and can be revoked.
+ * The two stay separate scopes even though the receptionist now holds both by
+ * default, because the dentist holds only the first: pricing a treatment must
+ * not carry a view of the clinic's turnover with it. Both are ordinary grants a
+ * clinic admin can revoke per role in the roles grid.
  *
  * Adding the Finance or Billing section to a role is NOT the same as granting the
  * money behind it — the section stays hidden until the matching scope is on.
@@ -215,34 +216,34 @@ export function normalizeFeatureList(value: unknown): string[] {
 /**
  * The roles a clinic admin may assign to their staff, in display order.
  *
- * Deliberately short. The list previously offered nine roles, several of which
- * overlapped, which made the picker a guess rather than a decision — and it
- * offered `super_admin`, the platform console role, which no clinic admin should
- * ever be able to hand out.
+ * Accounting stays separate from reception so access to the books and patient
+ * accounts does not also grant appointment-desk access.
+ *
+ * `super_admin` has never been here and must never be: it is the platform
+ * console role, and a clinic admin handing it out would be handing out the SaaS.
  */
 export const ASSIGNABLE_CLINIC_ROLES = [
   'clinic_admin',
   'dentist',
   'receptionist',
-  'cashier',
-  'nurse_assistant',
   'accountant',
 ] as const;
 
 /**
- * Roles that are no longer offered but remain fully supported.
+ * Roles not offered in the clinic picker but still honoured where they appear.
  *
- * A clinic that already has a pharmacist or a branch manager keeps them working,
- * grants and all — they simply are not choices for new staff. Removing them
- * outright would silently strip access from real accounts.
+ * Only `owner` remains, and it is not a retired clinic role at all — it is the
+ * company owner the platform console creates, which {@link isClinicAdminRole}
+ * already treats as a clinic admin. It is listed so that editing an owner's
+ * account through the clinic UI offers their own role back rather than silently
+ * demoting them to whichever role happens to be first in the picker.
+ *
+ * The roles this list used to hold — pharmacist, prescription assistant, branch
+ * manager, nurse, and cashier — were removed outright because no account held
+ * any of them.
  */
 export const LEGACY_CLINIC_ROLES = [
-  'pharmacist',
-  'prescription_assistant',
-  'branch_manager',
-  'nurse',
   'owner',
-  'clinic_staff',
 ] as const;
 
 /**
@@ -293,14 +294,17 @@ export function assignableRolesFor(currentRoles: Array<string | null | undefined
 /**
  * Defaults for a brand-new clinic.
  *
- * {@link PATIENT_PAYMENTS_PERMISSION} is on for the roles that actually handle
- * money at the chair or the front desk — dentist, receptionist, cashier — because
- * a receptionist who cannot see what a patient owes cannot take the payment. A
- * clinic admin can revoke it per role.
+ * {@link PATIENT_PAYMENTS_PERMISSION} is on for both roles that touch a
+ * patient's money — the dentist, who prices the treatment after examining, and
+ * the receptionist, who takes the payment for it. Neither can do their job
+ * without seeing what a patient owes. A clinic admin can revoke it per role.
  *
- * {@link CLINIC_FINANCES_PERMISSION} is NOT on for anyone but the clinic admin.
- * Turnover, the expense ledger, and per-doctor revenue stay the owner's business
- * until the admin grants them, which is what the accountant grant is for.
+ * {@link CLINIC_FINANCES_PERMISSION} — turnover, the expense ledger, per-doctor
+ * revenue — is on for Accountant and Receptionist. Both scopes remain ordinary
+ * grants that a clinic admin can narrow in the roles grid.
+ *
+ * The dentist keeps patient payments and nothing else: pricing a treatment is
+ * their call, the clinic's turnover is not their business.
  */
 export function defaultFeaturesForRole(role: string | null | undefined): string[] {
   const slug = roleSlug(role);
@@ -313,22 +317,18 @@ export function defaultFeaturesForRole(role: string | null | undefined): string[
     case 'dentist':
       return ['dashboard', 'patients', 'appointments', 'doctors', 'dental_charting', 'prescriptions', 'sick_leave', 'billing', 'ai_assistant', 'settings', PATIENT_PAYMENTS_PERMISSION];
     case 'receptionist':
-      return ['dashboard', 'patients', 'appointments', 'doctors', 'sick_leave', 'billing', 'prices', 'settings', PATIENT_PAYMENTS_PERMISSION];
-    case 'cashier':
-      return ['dashboard', 'patients', 'billing', 'settings', PATIENT_PAYMENTS_PERMISSION];
+      // The front desk, the till and the books, which here is one person.
+      // Everything except the clinical record and staff administration.
+      return ['dashboard', 'patients', 'appointments', 'doctors', 'sick_leave', 'finance', 'billing', 'prices', 'reports', 'settings', PATIENT_PAYMENTS_PERMISSION, CLINIC_FINANCES_PERMISSION];
     case 'accountant':
-      // Sections but no scopes: an accountant sees nothing until the clinic admin
-      // grants clinic finances, which is the deliberate opt-in.
-      return ['dashboard', 'finance', 'billing', 'reports', 'settings'];
-    case 'pharmacist':
-    case 'prescription_assistant':
-      return ['dashboard', 'patients', 'prescriptions', 'settings'];
-    case 'nurse_assistant':
-    case 'nurse':
-      return ['dashboard', 'patients', 'appointments', 'dental_charting', 'sick_leave', 'settings'];
-    case 'branch_manager':
-      return ['dashboard', 'patients', 'appointments', 'doctors', 'dental_charting', 'prescriptions', 'sick_leave', 'billing', 'reports', 'ai_assistant', 'settings', PATIENT_PAYMENTS_PERMISSION];
+      // Patient identity and account standing, plus every financial surface.
+      // Clinical charting, prescriptions, appointments, AI, and staff
+      // administration remain outside the accounting role.
+      return ['dashboard', 'patients', 'finance', 'billing', 'prices', 'reports', 'settings', PATIENT_PAYMENTS_PERMISSION, CLINIC_FINANCES_PERMISSION];
     default:
+      // Every role this clinic no longer issues lands here. An account somehow
+      // still holding one gets the dashboard and its own settings, never an
+      // accidental grant.
       return ['dashboard', 'settings'];
   }
 }

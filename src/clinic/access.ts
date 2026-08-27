@@ -55,6 +55,17 @@ const SLICE_MONEY_SCOPE: Partial<Record<StateSlice, MoneyPermission>> = {
 
 const FINANCIAL_SLICES = Object.keys(SLICE_MONEY_SCOPE) as StateSlice[];
 
+/** Clinical records that an accountant never receives, even when a broad
+ * reporting or patient-directory feature also depends on them. */
+const ACCOUNTANT_HIDDEN_SLICES: StateSlice[] = [
+  'appointments',
+  'diagnoses',
+  'forms',
+  'prescriptions',
+  'sickLeaves',
+  'symptoms',
+];
+
 /**
  * Readable by every signed-in member of the clinic. These carry the workspace's
  * own identity — who the colleagues are, which branches exist, what the roles
@@ -315,6 +326,10 @@ function readableSlices(access: WorkspaceAccess): Set<StateSlice> {
     FEATURE_SLICES[feature].forEach((slice) => slices.add(slice));
   });
 
+  if (access.role === 'accountant') {
+    ACCOUNTANT_HIDDEN_SLICES.forEach((slice) => slices.delete(slice));
+  }
+
   FINANCIAL_SLICES.forEach((slice) => {
     const scope = SLICE_MONEY_SCOPE[slice];
 
@@ -377,12 +392,23 @@ export function scopeClinicStateForAccess(
   // follow the owner's scope.
   const showPatientMoney = access.canViewPatientPayments;
   const showClinicMoney = access.canViewClinicFinances;
+  const isAccountant = access.role === 'accountant';
 
   return {
     ...withoutPlatformRoles,
-    patients: keep('patients', state.patients).map((patient) => (
-      showPatientMoney ? patient : { ...patient, balance: 0 }
-    )),
+    patients: keep('patients', state.patients).map((patient) => {
+      const visiblePatient = showPatientMoney ? patient : { ...patient, balance: 0 };
+
+      return isAccountant
+        ? {
+            ...visiblePatient,
+            medicalHistory: [],
+            dentalChart: [],
+            notes: [],
+            emergencyContacts: [],
+          }
+        : visiblePatient;
+    }),
     patientProfiles: keep('patientProfiles', state.patientProfiles).map((profile) => {
       const visibleProfile = showPatientMoney
         ? profile
@@ -394,11 +420,14 @@ export function scopeClinicStateForAccess(
         return visibleProfile;
       }
 
-      const isReceptionDesk = access.role === 'receptionist' || access.role === 'cashier';
+      const canReadSentCharges = access.role === 'receptionist' || isAccountant;
 
       return {
         ...visibleProfile,
-        treatmentCharges: isReceptionDesk
+        ...(isAccountant
+          ? { bloodGroup: 'Unknown', nextAppointment: undefined, recordCount: 0 }
+          : {}),
+        treatmentCharges: canReadSentCharges
           ? visibleProfile.treatmentCharges?.filter((charge) => charge.sentAt)
           : [],
       };
@@ -428,6 +457,16 @@ export function scopeClinicStateForAccess(
       // turnover and outstanding balances in plain text, so it follows the owner's
       // scope rather than the front desk's.
       ...(showClinicMoney ? {} : { aiMemory: undefined }),
+      ...(isAccountant
+        ? {
+            aiMemory: undefined,
+            assistantMessages: [],
+            assistantSessions: [],
+            assistantProjects: [],
+            doctorProfileNotifications: [],
+            medicalHistoryTemplate: undefined,
+          }
+        : {}),
     },
     financeEntries: keep('financeEntries', state.financeEntries),
   };
@@ -465,6 +504,43 @@ function restoreProfileMoney(
 
     return previous
       ? { ...profile, paymentPlan: previous.paymentPlan, pendingAmount: previous.pendingAmount }
+      : profile;
+  });
+}
+
+/** Accountants may update a balance through financial workflows, but cannot add,
+ * remove, or rewrite patient identity and clinical fields. */
+function restoreAccountantPatientClinicalData(
+  incoming: ClinicWorkspaceState['patients'],
+  current: ClinicWorkspaceState['patients']
+) {
+  const submitted = indexById(incoming);
+
+  return current.map((patient) => {
+    const next = submitted.get(patient.id);
+
+    return next ? { ...patient, balance: next.balance } : patient;
+  });
+}
+
+/** Only the payment plan and pending amount are writable patient-profile data
+ * for accounting. Identity, clinical metadata, and doctor-authored prices stay
+ * exactly as stored. */
+function restoreAccountantProfileClinicalData(
+  incoming: ClinicWorkspaceState['patientProfiles'],
+  current: ClinicWorkspaceState['patientProfiles']
+) {
+  const submitted = new Map(incoming.map((profile) => [profile.patientId, profile]));
+
+  return current.map((profile) => {
+    const next = submitted.get(profile.patientId);
+
+    return next
+      ? {
+          ...profile,
+          paymentPlan: next.paymentPlan,
+          pendingAmount: next.pendingAmount,
+        }
       : profile;
   });
 }
@@ -589,6 +665,7 @@ function mergeOrganizationProfile(
   // remains on the shared organization profile rather than a branch or patient.
   if (
     hasFeature(access, 'patients')
+    && access.role !== 'accountant'
     && incoming.medicalHistoryTemplate
     && Array.isArray(incoming.medicalHistoryTemplate.categories)
   ) {
@@ -792,11 +869,17 @@ export function mergeClinicStateForAccess({
     writable(slice) && Array.isArray(next) ? next : fallback
   );
 
-  const patients = take('patients', incoming.patients, current.patients);
+  const submittedPatients = take('patients', incoming.patients, current.patients);
+  const patients = access.role === 'accountant'
+    ? restoreAccountantPatientClinicalData(submittedPatients, current.patients)
+    : submittedPatients;
   const submittedPatientProfiles = take('patientProfiles', incoming.patientProfiles, current.patientProfiles);
-  const patientProfiles = access.role === 'dentist'
+  const chargeSafePatientProfiles = access.role === 'dentist'
     ? submittedPatientProfiles
     : restoreTreatmentCharges(submittedPatientProfiles, current.patientProfiles);
+  const patientProfiles = access.role === 'accountant'
+    ? restoreAccountantProfileClinicalData(chargeSafePatientProfiles, current.patientProfiles)
+    : chargeSafePatientProfiles;
   const doctors = take('doctors', incoming.doctors, current.doctors);
   const procedures = take('procedures', incoming.procedures, current.procedures);
 
