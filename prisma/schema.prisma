@@ -841,6 +841,9 @@ model PatientAttachment {
   height         Int?
   /// True when the image was treated as diagnostic and kept near-lossless.
   isRadiograph   Boolean  @default(false)
+  /// True for images saved directly to the patient's longitudinal image record
+  /// rather than as a draft waiting to be attached to one diagnosis.
+  patientRecord  Boolean  @default(false)
   /// SHA-256 of the stored bytes, so a corrupted or swapped object is detectable.
   checksum       String
   /// Account that uploaded it. Kept as a plain id so deleting a staff member does

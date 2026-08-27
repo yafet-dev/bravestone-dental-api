@@ -2041,6 +2041,7 @@ export const openApiDocument = {
           'width',
           'height',
           'isRadiograph',
+          'patientRecord',
           'uploadedByName',
           'createdAt',
         ],
@@ -2053,6 +2054,7 @@ export const openApiDocument = {
           width: { type: 'integer', minimum: 1, nullable: true },
           height: { type: 'integer', minimum: 1, nullable: true },
           isRadiograph: { type: 'boolean' },
+          patientRecord: { type: 'boolean' },
           uploadedByName: { type: 'string', nullable: true },
           createdAt: { type: 'string', format: 'date-time' },
         },
@@ -2071,6 +2073,10 @@ export const openApiDocument = {
           isRadiograph: {
             type: 'boolean',
             description: 'May promote an image to the diagnostic preservation policy; a radiograph-like filename cannot be downgraded.',
+          },
+          patientRecord: {
+            type: 'boolean',
+            description: 'Stores the image durably in the patient-level progress and X-ray record instead of as a diagnosis draft.',
           },
         },
       },

@@ -46,6 +46,7 @@ export type AttachmentSummary = {
   height: number | null;
   id: string;
   isRadiograph: boolean;
+  patientRecord: boolean;
   patientId: string;
   recordId: string | null;
   uploadedByName: string | null;
@@ -59,6 +60,7 @@ type AttachmentRow = {
   height: number | null;
   id: string;
   isRadiograph: boolean;
+  patientRecord: boolean;
   patientId: string;
   recordId: string | null;
   uploadedByName: string | null;
@@ -73,6 +75,7 @@ function toSummary(row: AttachmentRow): AttachmentSummary {
     height: row.height,
     id: row.id,
     isRadiograph: row.isRadiograph,
+    patientRecord: row.patientRecord,
     patientId: row.patientId,
     recordId: row.recordId,
     uploadedByName: row.uploadedByName,
@@ -128,6 +131,18 @@ type PatientAttachmentReference = {
   patientId: string;
   recordId: string;
 };
+
+/** Patient-level gallery images are durable even though they intentionally have
+ * no diagnosis id. Only diagnosis drafts use age-based orphan reclamation. */
+export function shouldReclaimUnreferencedAttachment(
+  row: Pick<AttachmentRow, 'createdAt' | 'patientRecord' | 'recordId'>,
+  hasDiagnosisReference: boolean,
+  now = Date.now()
+) {
+  return !row.patientRecord
+    && !hasDiagnosisReference
+    && (Boolean(row.recordId) || row.createdAt.getTime() < now - 24 * 60 * 60 * 1000);
+}
 
 function collectPatientAttachmentReferences(diagnoses: ClinicDiagnosis[]) {
   const references = new Map<string, PatientAttachmentReference>();
@@ -185,7 +200,7 @@ export async function validatePatientAttachmentReferences(input: {
   }
 
   const rows = await prisma.patientAttachment.findMany({
-    select: { id: true, patientId: true, recordId: true },
+    select: { id: true, patientId: true, patientRecord: true, recordId: true },
     where: {
       id: { in: [...references.keys()] },
       organizationId: input.organizationId,
@@ -200,6 +215,14 @@ export async function validatePatientAttachmentReferences(input: {
         400,
         'attachment_patient_mismatch',
         'A stored image cannot be moved to a different patient.'
+      );
+    }
+
+    if (row.patientRecord) {
+      throw new AuthError(
+        400,
+        'attachment_scope_mismatch',
+        'A patient image-record item cannot be moved into a diagnosis.'
       );
     }
 
@@ -252,15 +275,8 @@ export async function reconcilePatientAttachmentReferences(input: {
 
   await Promise.all(linkUpdates);
 
-  const abandonedDraftCutoff = Date.now() - 24 * 60 * 60 * 1000;
   const removedRows = rows.filter((row) => (
-    !references.has(row.id)
-    && (
-      Boolean(row.recordId)
-      // A tab can close or crash before its draft cleanup request. Keep active
-      // drafts safe, but reclaim abandoned uploads on a later workspace save.
-      || row.createdAt.getTime() < abandonedDraftCutoff
-    )
+    shouldReclaimUnreferencedAttachment(row, references.has(row.id))
   ));
 
   if (!removedRows.length) {
@@ -322,10 +338,19 @@ export async function createPatientAttachment(input: {
   }
 
   const patientId = requireWorkspaceId(input.body.patientId, 'patient');
+  const patientRecord = input.body.patientRecord === true;
   const recordId = typeof input.body.recordId === 'string' && input.body.recordId.trim()
     ? input.body.recordId.trim().slice(0, 120)
     : null;
   const fileName = sanitizeFileName(input.body.fileName ?? input.body.name);
+
+  if (patientRecord && recordId) {
+    throw new AuthError(
+      400,
+      'invalid_attachment_scope',
+      'Choose either the patient image record or a diagnosis record for this image.'
+    );
+  }
 
   // A client-supplied id must not create an unbounded set of fake "patients" that
   // bypasses the per-patient cap. Use the same answer for missing and foreign ids so
@@ -395,6 +420,7 @@ export async function createPatientAttachment(input: {
         fileName,
         height: prepared.height,
         isRadiograph: prepared.isRadiograph,
+        patientRecord,
         organizationId: input.organizationId,
         patientId,
         // The request's recordId is an ownership assertion only. The row becomes
