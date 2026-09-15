@@ -173,7 +173,7 @@ test('a malformed query falls back to the unfiltered first page', () => {
     status: 'nope',
   }), {
     page: 1,
-    pageSize: 25,
+    pageSize: 10,
     records: 'all',
     search: '',
     status: 'all',
@@ -202,12 +202,12 @@ test('every size the rows-per-page selector offers is accepted', () => {
   });
 });
 
-test('a size the selector does not offer falls back to twenty-five, not to the smallest', () => {
+test('a size the selector does not offer falls back to ten', () => {
   [1, 7, 24, 1000, -10, 0].forEach((pageSize) => {
-    assert.equal(parsePatientDirectoryQuery({ pageSize: String(pageSize) }).pageSize, 25);
+    assert.equal(parsePatientDirectoryQuery({ pageSize: String(pageSize) }).pageSize, 10);
   });
 
-  assert.equal(parsePatientDirectoryQuery({}).pageSize, 25);
+  assert.equal(parsePatientDirectoryQuery({}).pageSize, 10);
 });
 
 test('an over-long search term is cut rather than sent to the database whole', () => {

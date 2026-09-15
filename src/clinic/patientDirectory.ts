@@ -33,7 +33,7 @@ import type {
 /** Offered by the rows-per-page selector. Any other size falls back to the default. */
 export const PATIENT_DIRECTORY_PAGE_SIZES = [10, 25, 50, 100] as const;
 
-const defaultPageSize = 25;
+const defaultPageSize = 10;
 const patientStatuses = new Set(['active', 'inactive', 'lost']);
 const needsPaymentStatus = 'needsPayment';
 const maximumSearchLength = 120;
