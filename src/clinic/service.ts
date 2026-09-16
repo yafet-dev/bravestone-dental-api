@@ -2522,7 +2522,9 @@ export async function replaceClinicState(
           paymentPlan: toJsonValue(profile.paymentPlan),
           pendingAmount: profile.pendingAmount,
           recordCount: profile.recordCount,
-          cardNumber: profile.cardNumber,
+          // Registration no longer requires a paper card number. Older clients
+          // omit it, but the relational column still requires a string.
+          cardNumber: profile.cardNumber ?? '',
           registrationTime: profile.registrationTime,
         })),
       });
