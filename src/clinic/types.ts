@@ -463,6 +463,7 @@ export type ClinicMedicalHistoryTemplate = {
 };
 
 export type ClinicOrganizationProfile = {
+  patientNumberLastUsed?: number;
   name: string;
   legalName: string;
   contact: string;

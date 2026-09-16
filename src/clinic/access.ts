@@ -652,6 +652,10 @@ function mergeOrganizationProfile(
 
   const next: ClinicOrganizationProfile = { ...current };
 
+  if (hasFeature(access, 'patients') && access.role !== 'accountant') {
+    next.patientNumberLastUsed = incoming.patientNumberLastUsed ?? current.patientNumberLastUsed;
+  }
+
   ADMIN_ONLY_PROFILE_FIELDS.forEach((field) => {
     next[field] = current[field];
   });

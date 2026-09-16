@@ -25,6 +25,7 @@ import {
 import { extractAttachmentContents } from './attachments';
 import { scopeClinicStateForAccess } from './access';
 import { calculatePatientAge } from './patientAge';
+import { assignPatientNumbers } from './patientNumbering';
 import { isSuperAdminRole } from './roles';
 import { removeClinicStaffUser } from './staffUsers';
 import {
@@ -1562,6 +1563,7 @@ function mapRelationalOrganizationProfile(
     // every GET (including the echo returned by PUT /bootstrap) drops a list that
     // was successfully written moments earlier.
     servicePrices: fallbackProfile.servicePrices,
+    patientNumberLastUsed: fallbackProfile.patientNumberLastUsed,
     medicalHistoryTemplate: fallbackProfile.medicalHistoryTemplate,
     aiMemory: fallbackProfile.aiMemory,
     assistantMessages: toAssistantMessages(
@@ -2370,6 +2372,29 @@ export async function replaceClinicState(
         dashboardPendingForms: dashboardMetrics.pendingForms,
       },
     });
+
+    // The organization upsert above holds its row lock until commit. Read the
+    // latest counter here so concurrent registrations cannot allocate the same ID.
+    const storedWorkspace = await transaction.clinicWorkspaceState.findUnique({
+      where: { id: workspaceId },
+      select: { organizationProfile: true, patientProfiles: true },
+    });
+    const storedProfiles = storedWorkspace
+      ? storedWorkspace.patientProfiles as unknown as ClinicPatientProfile[]
+      : nextState.patientProfiles;
+    const storedProfile = storedWorkspace?.organizationProfile as unknown as ClinicOrganizationProfile | undefined;
+    const storedIds = new Set(storedProfiles.map((profile) => profile.patientId));
+    const submittedIds = new Set(nextState.patientProfiles.map((profile) => profile.patientId));
+    if (nextState.patientProfiles.some((profile) => !storedIds.has(profile.patientId))
+      && storedProfiles.some((profile) => !submittedIds.has(profile.patientId))) {
+      throw new AuthError(409, 'patient_directory_changed', 'Another patient was registered. Wait for the patient list to refresh, then try saving again.');
+    }
+    const numbering = assignPatientNumbers(
+      nextState.patientProfiles, storedProfiles,
+      storedProfile?.patientNumberLastUsed, nextState.organizationProfile.patientNumberLastUsed,
+    );
+    nextState.patientProfiles = numbering.profiles;
+    nextState.organizationProfile.patientNumberLastUsed = numbering.lastUsed;
 
     for (const branch of nextState.branches) {
       await transaction.branch.upsert({
