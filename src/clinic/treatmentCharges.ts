@@ -89,3 +89,33 @@ export function resolveTreatmentTotal(storedTotal: number, charges: TreatmentCha
 
   return sumTreatmentCharges(sent);
 }
+
+/**
+ * The charge list to store, given what an author was allowed to see.
+ *
+ * A save submits the complete new list, which is safe only while the author can
+ * see the whole of it. Reception is shown the SENT lines and nothing else — so a
+ * list from reception has none of the doctor's drafts in it, and storing it
+ * literally would destroy working notes the doctor had not handed over yet.
+ * Their drafts are carried across untouched instead: reception owns the billable
+ * lines, the doctor's notes are not theirs to delete by omission.
+ */
+export function mergeSubmittedTreatmentCharges({
+  canSeeDrafts,
+  stored,
+  submitted,
+}: {
+  canSeeDrafts: boolean;
+  stored: TreatmentChargeLike[];
+  submitted: TreatmentChargeLike[];
+}): TreatmentChargeLike[] {
+  if (canSeeDrafts) {
+    return submitted;
+  }
+
+  const preservedDrafts = stored.filter((charge) => !charge.sentAt);
+
+  // Submitted lines lead so the author's own ordering is what they read back;
+  // the drafts they never saw trail behind exactly as they were.
+  return [...submitted.filter((charge) => Boolean(charge.sentAt)), ...preservedDrafts];
+}

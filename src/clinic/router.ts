@@ -420,10 +420,31 @@ clinicRouter.put('/patients/:patientId/treatment-charges', async (request, respo
       return;
     }
 
-    if (context.access.role !== 'dentist' && !context.access.canManageClinic) {
+    /**
+     * Reception may price a patient too.
+     *
+     * The doctor setting the price is the normal path and stays the normal path.
+     * But a clinic where the dentist cannot reach their account — a forgotten
+     * password, a shared tablet, a locked-out account on a busy morning — was a
+     * clinic that could not bill anybody until that was sorted out, because the
+     * price is what every payment is collected against. Reception was already
+     * taking the money; they simply had no way to record what it was for.
+     *
+     * Every line carries the name of whoever entered it, so a price reception set
+     * is distinguishable from one the dentist set, and the clinic can see which is
+     * which. The accountant stays out: they reconcile what was charged rather than
+     * decide it.
+     */
+    const canPriceTreatment = (
+      context.access.role === 'dentist'
+      || context.access.role === 'receptionist'
+      || context.access.canManageClinic
+    );
+
+    if (!canPriceTreatment) {
       response.status(403).json({
         code: 'forbidden',
-        message: 'Only a dentist or clinic administrator can change treatment prices.',
+        message: 'Only a dentist, receptionist, or clinic administrator can change treatment prices.',
       });
       return;
     }
@@ -443,6 +464,11 @@ clinicRouter.put('/patients/:patientId/treatment-charges', async (request, respo
     ));
     const result = await updatePatientTreatmentCharges({
       charges: request.body.charges,
+      // Only roles that are SHOWN the drafts can be submitting a list that
+      // legitimately omits one — the dentist, and a clinic admin, who reads the
+      // workspace unredacted. Reception is not, so theirs are preserved for them.
+      // See `canSeeDrafts`.
+      canSeeDrafts: context.access.role === 'dentist' || context.access.canManageClinic,
       organizationId: context.organizationId,
       patientId,
       state: context.state,

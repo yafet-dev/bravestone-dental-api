@@ -36,6 +36,7 @@ import {
 } from './permissions';
 import { clinicSeedState } from './seed';
 import {
+  mergeSubmittedTreatmentCharges,
   normalizeTreatmentCharges,
   resolveTreatmentTotal,
   sentTreatmentCharges,
@@ -1985,11 +1986,22 @@ export type PatientTreatmentChargesUpdate = {
  */
 export async function updatePatientTreatmentCharges({
   charges,
+  canSeeDrafts = true,
   organizationId,
   patientId,
   state,
 }: {
   charges: unknown;
+  /**
+   * False for an author who is only ever shown the SENT lines — reception.
+   *
+   * The request body is the complete new list, so a caller who cannot see the
+   * doctor's drafts would submit a list with none of them in it and silently
+   * destroy the notes the doctor had not handed over yet. Their drafts are
+   * carried across instead: reception edits the billable lines, the doctor's
+   * working notes are none of their business and survive untouched.
+   */
+  canSeeDrafts?: boolean;
   organizationId: string;
   patientId: string;
   state: ClinicWorkspaceState;
@@ -2001,7 +2013,11 @@ export async function updatePatientTreatmentCharges({
     return null;
   }
 
-  const treatmentCharges = normalizeTreatmentCharges(charges);
+  const treatmentCharges = mergeSubmittedTreatmentCharges({
+    canSeeDrafts,
+    stored: normalizeTreatmentCharges(profile.treatmentCharges),
+    submitted: normalizeTreatmentCharges(charges),
+  });
   const sentCharges = sentTreatmentCharges(treatmentCharges);
   const hadSentCharges = sentTreatmentCharges(
     normalizeTreatmentCharges(profile.treatmentCharges)
