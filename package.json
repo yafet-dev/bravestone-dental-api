@@ -15,6 +15,7 @@
     "migrate:clinic-roles": "tsx scripts/consolidate-clinic-roles.ts",
     "migrate:money-scopes": "tsx scripts/migrate-money-scopes.ts",
     "migrate:roles": "tsx scripts/migrate-roles.ts",
+    "seed:golden-prices": "tsx scripts/seed-golden-price-list.ts",
     "reconcile:roles": "tsx scripts/reconcile-snapshot-roles.ts",
     "lint": "prisma generate && tsc --noEmit",
     "test": "tsx --test tests/*.test.ts",
