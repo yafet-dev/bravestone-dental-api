@@ -215,3 +215,10 @@ test('an over-long search term is cut rather than sent to the database whole', (
 
   assert.equal(search.length, 120);
 });
+
+test('search finds the saved patient number with or without PAT prefix', () => {
+  for (const search of ['0004', 'PAT-0004']) {
+    const result = pagePatientDirectorySlices(slices, query({ search }));
+    assert.deepEqual(result.patients.map((item) => item.id), ['4']);
+  }
+});

@@ -1,3 +1,4 @@
+import { mergeVitalReadings, normalizeVitalReadings } from './patientVitals';
 import { Prisma } from '@prisma/client';
 import { ensureAdminStateSeeded } from '../admin/service';
 import { AuthError } from '../auth/errors';
@@ -25,7 +26,7 @@ import {
 import { extractAttachmentContents } from './attachments';
 import { scopeClinicStateForAccess } from './access';
 import { calculatePatientAge } from './patientAge';
-import { assignPatientNumbers } from './patientNumbering';
+import { validateManualPatientIds } from './manualPatientIds';
 import { isSuperAdminRole } from './roles';
 import { removeClinicStaffUser } from './staffUsers';
 import {
@@ -931,6 +932,7 @@ function normalizeClinicState(state: ClinicWorkspaceState): ClinicWorkspaceState
       address: normalizePatientAddress(profile.address),
       pendingAmount,
       treatmentCharges,
+      vitalReadings: normalizeVitalReadings(profile.vitalReadings),
       paymentPlan: {
         ...paymentPlan,
         total: totalCost,
@@ -1247,6 +1249,7 @@ function mapRelationalPatientProfiles(
       // the relational view so a refresh never collapses an itemised charge
       // history into only one total.
       treatmentCharges: normalizeTreatmentCharges(fallbackProfile?.treatmentCharges),
+      vitalReadings: normalizeVitalReadings(fallbackProfile?.vitalReadings),
       pendingAmount: profile.pendingAmount,
       recordCount: profile.recordCount,
       cardNumber: profile.cardNumber,
@@ -1564,7 +1567,6 @@ function mapRelationalOrganizationProfile(
     // every GET (including the echo returned by PUT /bootstrap) drops a list that
     // was successfully written moments earlier.
     servicePrices: fallbackProfile.servicePrices,
-    patientNumberLastUsed: fallbackProfile.patientNumberLastUsed,
     medicalHistoryTemplate: fallbackProfile.medicalHistoryTemplate,
     aiMemory: fallbackProfile.aiMemory,
     assistantMessages: toAssistantMessages(
@@ -2390,7 +2392,7 @@ export async function replaceClinicState(
     });
 
     // The organization upsert above holds its row lock until commit. Read the
-    // latest counter here so concurrent registrations cannot allocate the same ID.
+    // latest profiles here so concurrent registrations cannot reuse a manual ID.
     const storedWorkspace = await transaction.clinicWorkspaceState.findUnique({
       where: { id: workspaceId },
       select: { organizationProfile: true, patientProfiles: true },
@@ -2398,19 +2400,16 @@ export async function replaceClinicState(
     const storedProfiles = storedWorkspace
       ? storedWorkspace.patientProfiles as unknown as ClinicPatientProfile[]
       : nextState.patientProfiles;
-    const storedProfile = storedWorkspace?.organizationProfile as unknown as ClinicOrganizationProfile | undefined;
     const storedIds = new Set(storedProfiles.map((profile) => profile.patientId));
     const submittedIds = new Set(nextState.patientProfiles.map((profile) => profile.patientId));
     if (nextState.patientProfiles.some((profile) => !storedIds.has(profile.patientId))
       && storedProfiles.some((profile) => !submittedIds.has(profile.patientId))) {
       throw new AuthError(409, 'patient_directory_changed', 'Another patient was registered. Wait for the patient list to refresh, then try saving again.');
     }
-    const numbering = assignPatientNumbers(
-      nextState.patientProfiles, storedProfiles,
-      storedProfile?.patientNumberLastUsed, nextState.organizationProfile.patientNumberLastUsed,
-    );
-    nextState.patientProfiles = numbering.profiles;
-    nextState.organizationProfile.patientNumberLastUsed = numbering.lastUsed;
+    nextState.patientProfiles = validateManualPatientIds(nextState.patientProfiles, storedProfiles).map(profile => ({
+      ...profile,
+      vitalReadings: mergeVitalReadings(storedProfiles.find(item => item.patientId === profile.patientId)?.vitalReadings, profile.vitalReadings),
+    }));
 
     for (const branch of nextState.branches) {
       await transaction.branch.upsert({

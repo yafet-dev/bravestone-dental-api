@@ -486,7 +486,19 @@ export type ClinicPaymentPlan = {
   method: string;
 };
 
+export type ClinicVitalReading = {
+  id: string;
+  recordedAt: string;
+  recordedBy: string;
+  temperature: string;
+  systolic: string;
+  diastolic: string;
+  /** Fasting blood sugar only; never inferred from historic glucose readings. */
+  fbs: string;
+};
+
 export type ClinicPatientProfile = {
+  vitalReadings?: ClinicVitalReading[];
   patientId: string;
   directoryId: string;
   dob: string;

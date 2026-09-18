@@ -1,3 +1,4 @@
+import { mergeVitalReadings } from './patientVitals';
 /**
  * Server-side enforcement of {@link ./permissions}.
  *
@@ -425,7 +426,7 @@ export function scopeClinicStateForAccess(
       return {
         ...visibleProfile,
         ...(isAccountant
-          ? { bloodGroup: 'Unknown', nextAppointment: undefined, recordCount: 0 }
+          ? { bloodGroup: 'Unknown', nextAppointment: undefined, recordCount: 0, vitalReadings: [] }
           : {}),
         treatmentCharges: canReadSentCharges
           ? visibleProfile.treatmentCharges?.filter((charge) => charge.sentAt)
@@ -653,7 +654,6 @@ function mergeOrganizationProfile(
   const next: ClinicOrganizationProfile = { ...current };
 
   if (hasFeature(access, 'patients') && access.role !== 'accountant') {
-    next.patientNumberLastUsed = incoming.patientNumberLastUsed ?? current.patientNumberLastUsed;
   }
 
   ADMIN_ONLY_PROFILE_FIELDS.forEach((field) => {
@@ -847,6 +847,7 @@ export function mergeClinicStateForAccess({
         ? incoming.patientProfiles.map((profile) => ({
             ...profile,
             branchId: resolveBranchId(profile.branchId),
+            vitalReadings: mergeVitalReadings(current.patientProfiles.find(item => item.patientId === profile.patientId)?.vitalReadings, profile.vitalReadings),
           }))
         : current.patientProfiles,
       staffUsers: secureClinicAdminStaffUsers({
@@ -877,7 +878,10 @@ export function mergeClinicStateForAccess({
   const patients = access.role === 'accountant'
     ? restoreAccountantPatientClinicalData(submittedPatients, current.patients)
     : submittedPatients;
-  const submittedPatientProfiles = take('patientProfiles', incoming.patientProfiles, current.patientProfiles);
+  const submittedPatientProfiles = take('patientProfiles', incoming.patientProfiles, current.patientProfiles).map(profile => ({
+    ...profile,
+    vitalReadings: mergeVitalReadings(current.patientProfiles.find(item => item.patientId === profile.patientId)?.vitalReadings, profile.vitalReadings),
+  }));
   const chargeSafePatientProfiles = access.role === 'dentist'
     ? submittedPatientProfiles
     : restoreTreatmentCharges(submittedPatientProfiles, current.patientProfiles);

@@ -1,3 +1,6 @@
+import { findManualPatientIdOwner } from './manualPatientIds';
+import { appendPatientVitalReading } from './patientVitalsStore';
+import { normalizeVitalReadings } from './patientVitals';
 import { randomUUID } from 'node:crypto';
 import express, { Router, type NextFunction, type Request, type Response } from 'express';
 import { sendAuthError } from '../auth/errors';
@@ -330,6 +333,44 @@ clinicRouter.delete('/users/:userId', async (request, response, next) => {
  * routes below do it, and `readPatientDirectoryPage` then applies the same
  * role redaction the bootstrap response uses.
  */
+clinicRouter.get('/patients/id-availability', async (request, response, next) => {
+  try {
+    const context = resolveClinicRequestOrganizationId(request);
+    if (!context.organizationId) {
+      response.status(context.status).json({ message: context.error });
+      return;
+    }
+    const access = resolveWorkspaceAccess({ role: request.actor?.role, rolePermissions: await getClinicRolePermissions(context.organizationId) });
+    if (!requireFeature(access, 'patients', response)) return;
+    const value = typeof request.query.value === 'string' ? request.query.value.trim() : '';
+    const excludingPatientId = typeof request.query.excludingPatientId === 'string' ? request.query.excludingPatientId : null;
+    if (!value || value.length > 200) {
+      response.status(400).json({ message: 'Enter a valid patient ID.' });
+      return;
+    }
+    const profiles = await prisma.$queryRaw<Array<{ patientId: string; directoryId: string }>>`
+      SELECT profile->>'patientId' AS "patientId", profile->>'directoryId' AS "directoryId"
+      FROM clinic_workspace_states, jsonb_array_elements("patientProfiles") profile
+      WHERE "organizationId" = ${context.organizationId}
+    `;
+    response.setHeader('Cache-Control', 'no-store');
+    const owner = findManualPatientIdOwner(value, profiles, excludingPatientId);
+    let patientName: string | undefined;
+    if (owner) {
+      const [patient] = await prisma.$queryRaw<Array<{ name: string }>>`
+        SELECT patient->>'name' AS name
+        FROM clinic_workspace_states, jsonb_array_elements(patients) patient
+        WHERE "organizationId" = ${context.organizationId} AND patient->>'id' = ${owner.patientId}
+        LIMIT 1
+      `;
+      patientName = patient?.name;
+    }
+    response.json({ available: !owner, ...(owner && patientName ? { patientName } : {}) });
+  } catch (error) {
+    if (!sendAuthError(error, response)) next(error);
+  }
+});
+
 clinicRouter.get('/patients/directory', async (request, response, next) => {
   try {
     const context = resolveClinicRequestOrganizationId(request);
@@ -407,6 +448,43 @@ clinicRouter.post(
     }
   },
 );
+
+clinicRouter.post('/patients/:patientId/vitals', async (request, response, next) => {
+  try {
+    const context = resolveClinicRequestOrganizationId(request);
+    if (!context.organizationId) {
+      response.status(context.status).json({ message: context.error });
+      return;
+    }
+    const access = resolveWorkspaceAccess({
+      role: request.actor?.role,
+      rolePermissions: await getClinicRolePermissions(context.organizationId),
+    });
+    if (!requireFeature(access, 'patients', response)) return;
+    if (access.role === 'accountant') {
+      response.status(403).json({ message: 'This role cannot record patient vitals.' });
+      return;
+    }
+    const patientId = request.params.patientId?.trim();
+    const [reading] = normalizeVitalReadings([{
+      ...request.body?.reading,
+      recordedBy: request.actor?.fullName || 'Clinic staff',
+      recordedAt: new Date().toISOString(),
+    }]);
+    if (!patientId || !reading || reading.id.length > 100) {
+      response.status(400).json({ message: 'A patient and valid vital measurements are required.' });
+      return;
+    }
+    const readings = await appendPatientVitalReading(context.organizationId, patientId, reading);
+    if (!readings) {
+      response.status(404).json({ message: 'Patient profile not found.' });
+      return;
+    }
+    response.json({ patientId, readings });
+  } catch (error) {
+    if (!sendAuthError(error, response)) next(error);
+  }
+});
 
 clinicRouter.put('/patients/:patientId/treatment-charges', async (request, response, next) => {
   try {
