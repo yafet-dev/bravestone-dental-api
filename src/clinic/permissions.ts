@@ -318,8 +318,9 @@ export function defaultFeaturesForRole(role: string | null | undefined): string[
       return ['dashboard', 'patients', 'appointments', 'doctors', 'dental_charting', 'prescriptions', 'sick_leave', 'billing', 'ai_assistant', 'settings', PATIENT_PAYMENTS_PERMISSION];
     case 'receptionist':
       // The front desk, the till and the books, which here is one person.
-      // Everything except the clinical record and staff administration.
-      return ['dashboard', 'patients', 'appointments', 'doctors', 'sick_leave', 'finance', 'billing', 'prices', 'reports', 'settings', PATIENT_PAYMENTS_PERMISSION, CLINIC_FINANCES_PERMISSION];
+      // Everything except the clinical record and staff administration — the
+      // care team roster is the latter, so Doctors is not part of reception.
+      return ['dashboard', 'patients', 'appointments', 'sick_leave', 'finance', 'billing', 'prices', 'reports', 'settings', PATIENT_PAYMENTS_PERMISSION, CLINIC_FINANCES_PERMISSION];
     case 'accountant':
       // Patient identity and account standing, plus every financial surface.
       // Clinical charting, prescriptions, appointments, AI, and staff

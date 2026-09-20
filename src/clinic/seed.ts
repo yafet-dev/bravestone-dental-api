@@ -382,7 +382,7 @@ export const clinicSeedState: ClinicWorkspaceState = {
   roles: [
     { role: 'clinic_admin', access: 'Every section, staff and role administration, patient payments and clinic finances' },
     { role: 'dentist', access: 'Patients, appointments, charting, prescriptions, sick leave, patient payments' },
-    { role: 'receptionist', access: 'Patients, appointments, doctors, sick leave, billing, finance, reports, patient payments and clinic finances' },
+    { role: 'receptionist', access: 'Patients, appointments, sick leave, billing, finance, reports, patient payments and clinic finances' },
     { role: 'accountant', access: 'Patient accounts, billing, payments, finance, prices and financial reports' },
   ],
   // Both money scopes are on for the receptionist as well as the admin, because
