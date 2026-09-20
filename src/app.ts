@@ -4,6 +4,7 @@ import swaggerUi from 'swagger-ui-express';
 import { adminRouter } from './admin/router';
 import { authRouter } from './auth/router';
 import { clinicRouter } from './clinic/router';
+import { contactRouter } from './contact/router';
 import { discoveryRouter } from './discovery/router';
 import { invitationsRouter } from './invitations/router';
 import { openApiDocument } from './openapi';
@@ -64,6 +65,7 @@ export function createApp() {
   app.use('/api/auth', authRouter);
   app.use('/api/clinic', clinicRouter);
   app.use('/api/discovery', discoveryRouter);
+  app.use('/api/contact', contactRouter);
   app.use('/api/invitations', invitationsRouter);
   // Deliberately prefixed: everything under /api/public is readable without a
   // session, so the trust boundary is visible at the mount rather than buried in

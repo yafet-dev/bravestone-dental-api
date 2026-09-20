@@ -64,3 +64,10 @@ npm run migrate:attachments -- --purge
 
 Do not run the final purge until the dry run reports no refused images and the
 copied records have been checked in the application.
+# Contact form
+
+Run `npm run setup:contact` once against the target Supabase database before deploying the API. This adds `public.contact_messages` and enables RLS with no browser access. The API uses its existing server database connection to write messages.
+
+`POST /api/contact` accepts `name`, `message`, either `phone` or `email` (at least one required), and an empty `website` honeypot. The form defaults to phone. Re-run `npm run setup:contact` to add the phone column to existing databases; previous enquiries are preserved. Set `CONTACT_TO_EMAIL` to the notification recipient (defaults to the address already listed on the landing page, `yafetdev@gmail.com`). Configure the existing `SMTP_*` variables for delivery. The visitor's email is used as Reply-To only when supplied; phone numbers appear in the notification body.
+
+Messages are saved before email is attempted. Review them in Supabase Table Editor, including `email_status` (`pending`, `sent`, or `failed`). Failed notifications remain saved; there is no automatic email retry. Rate limiting currently uses an in-memory store per API instance; use a shared store or edge rate limit for multi-instance production deployments.
